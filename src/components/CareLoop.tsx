@@ -2,18 +2,28 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { CareEvent, ChatMessage, TreatmentState, User } from "@/lib/types";
+import type {
+  CareEvent,
+  ChatMessage,
+  ConversationMemory,
+  MemorySnapshot,
+  TreatmentState,
+  User,
+} from "@/lib/types";
 import CareStatusPanel from "./CareStatusPanel";
 import CareTimeline from "./CareTimeline";
 import QuickActionsBar from "./QuickActionsBar";
 import ChatView from "./ChatView";
 import SimulatePanel from "./SimulatePanel";
+import CareContextCard from "./CareContextCard";
 
 interface Props {
   user: User;
   initialTreatment?: TreatmentState;
   initialEvents: CareEvent[];
   initialMessages: ChatMessage[];
+  initialMemory?: ConversationMemory;
+  initialSnapshot?: MemorySnapshot;
 }
 
 export default function CareLoop({
@@ -21,10 +31,14 @@ export default function CareLoop({
   initialTreatment,
   initialEvents,
   initialMessages,
+  initialMemory,
+  initialSnapshot,
 }: Props) {
   const [treatment, setTreatment] = useState<TreatmentState | undefined>(initialTreatment);
   const [events, setEvents] = useState<CareEvent[]>(initialEvents);
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
+  const [memory, setMemory] = useState<ConversationMemory | undefined>(initialMemory);
+  const [snapshot, setSnapshot] = useState<MemorySnapshot | undefined>(initialSnapshot);
   const [busy, setBusy] = useState(false);
   const pollRef = useRef<number | null>(null);
 
@@ -35,10 +49,27 @@ export default function CareLoop({
     setTreatment(data.treatment);
     setEvents(data.events ?? []);
     setMessages(data.messages ?? []);
+    setMemory(data.conversation_memory);
+    setSnapshot(data.latest_memory_snapshot);
+  }, [user.id]);
+
+  const rehydrateSession = useCallback(async () => {
+    const res = await fetch(`/api/v1/chat/session?userId=${encodeURIComponent(user.id)}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    setMessages(data.messages ?? []);
+    setTreatment(data.treatment);
+    setMemory(data.conversation_memory);
+    setSnapshot(data.latest_memory_snapshot);
   }, [user.id]);
 
   useEffect(() => {
-    // Light polling so webhook-driven events show up when triggered elsewhere.
+    void rehydrateSession();
+  }, [rehydrateSession]);
+
+  useEffect(() => {
     pollRef.current = window.setInterval(refresh, 4000);
     return () => {
       if (pollRef.current) window.clearInterval(pollRef.current);
@@ -54,10 +85,11 @@ export default function CareLoop({
       role: "user",
       content,
       created_at: new Date().toISOString(),
+      metadata: {},
     };
     setMessages((prev) => [...prev, optimistic]);
     try {
-      const res = await fetch("/api/chat", {
+      const res = await fetch("/api/v1/chat/message", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ userId: user.id, content }),
@@ -71,10 +103,10 @@ export default function CareLoop({
     }
   }
 
-  async function runAction(body: Record<string, unknown>) {
+  async function runAction(path: string, body: Record<string, unknown>) {
     setBusy(true);
     try {
-      const res = await fetch("/api/actions", {
+      const res = await fetch(path, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -123,6 +155,12 @@ export default function CareLoop({
 
       <div className="flex-1 mx-auto max-w-7xl w-full px-5 py-6 grid grid-cols-12 gap-6">
         <aside className="col-span-12 lg:col-span-3 space-y-6">
+          <CareContextCard
+            user={user}
+            treatment={treatment}
+            memory={memory}
+            snapshot={snapshot}
+          />
           <CareStatusPanel user={user} treatment={treatment} />
           <CareTimeline events={events} />
         </aside>

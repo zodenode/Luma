@@ -6,8 +6,8 @@ import type { TreatmentState } from "@/lib/types";
 interface Props {
   userId: string;
   treatment?: TreatmentState;
-  onAction: (body: Record<string, unknown>) => Promise<void> | void;
-  onOpenChat: (prompt: string) => void;
+  onAction: (path: string, body: Record<string, unknown>) => Promise<void> | void;
+  onOpenChat: (text: string) => void;
   busy: boolean;
 }
 
@@ -19,7 +19,9 @@ export default function QuickActionsBar({
   busy,
 }: Props) {
   const [symptomOpen, setSymptomOpen] = useState(false);
-  const hasMed = Boolean(treatment?.medication && treatment.medication.state !== "none");
+  const hasMed =
+    Boolean(treatment?.active_medication) &&
+    treatment?.medication_status !== "none";
 
   return (
     <div className="card p-3 flex flex-wrap gap-2 items-center">
@@ -28,15 +30,28 @@ export default function QuickActionsBar({
       </span>
       <button
         className="btn"
+        disabled={busy}
+        onClick={() =>
+          onAction("/api/v1/actions/checkin", { userId, note: "Quick check-in" })
+        }
+      >
+        ✓ Check in
+      </button>
+      <button
+        className="btn"
         disabled={busy || !hasMed}
-        onClick={() => onAction({ action: "log_medication", userId, taken: true })}
+        onClick={() =>
+          onAction("/api/v1/actions/log-medication", { userId, taken: true })
+        }
       >
         ✅ Log dose taken
       </button>
       <button
         className="btn"
         disabled={busy || !hasMed}
-        onClick={() => onAction({ action: "log_medication", userId, taken: false })}
+        onClick={() =>
+          onAction("/api/v1/actions/log-medication", { userId, taken: false })
+        }
       >
         ⏭️ Missed dose
       </button>
@@ -54,8 +69,7 @@ export default function QuickActionsBar({
         className="btn text-luma-warn"
         disabled={busy}
         onClick={() =>
-          onAction({
-            action: "request_help",
+          onAction("/api/v1/actions/request-help", {
             userId,
             reason: "User requested human help",
           })
@@ -69,8 +83,7 @@ export default function QuickActionsBar({
           onCancel={() => setSymptomOpen(false)}
           busy={busy}
           onSubmit={async (symptom, severity, note) => {
-            await onAction({
-              action: "checkin_symptom",
+            await onAction("/api/v1/actions/checkin", {
               userId,
               symptom,
               severity,

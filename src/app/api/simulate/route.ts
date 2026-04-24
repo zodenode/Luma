@@ -13,13 +13,13 @@ const Schema = z.object({
     "medication_delivered",
     "refill_due",
     "adherence_missed",
+    "request_help",
   ]),
   payload: z.record(z.string(), z.unknown()).optional(),
 });
 
 /**
- * Dev-only convenience endpoint. Fires any external-system event for a user
- * so you can walk the full care loop from the UI without curl.
+ * Dev-only convenience endpoint. Fires external-system style events for a user.
  */
 export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
@@ -29,7 +29,14 @@ export async function POST(req: Request) {
   }
 
   const eventType = parsed.data.event as EventType;
-  const source = eventType.startsWith("medication_") || eventType === "refill_due" ? "pharmacy" : "openloop";
+  const source =
+    eventType === "request_help"
+      ? "system"
+      : eventType.startsWith("medication_") ||
+          eventType === "refill_due" ||
+          eventType === "adherence_missed"
+        ? "pharmacy"
+        : "openloop";
 
   const defaults: Record<string, Record<string, unknown>> = {
     consult_completed: {
@@ -41,6 +48,7 @@ export async function POST(req: Request) {
     medication_delivered: {},
     refill_due: {},
     adherence_missed: { missed_doses: 2 },
+    request_help: { simulated: true },
   };
 
   const payload = { ...(defaults[eventType] ?? {}), ...(parsed.data.payload ?? {}) };
@@ -48,8 +56,9 @@ export async function POST(req: Request) {
   const event = await ingestEvent({
     userId: parsed.data.userId,
     type: eventType,
-    source: source as "openloop" | "pharmacy",
+    source: source as "openloop" | "pharmacy" | "system",
     payload,
+    idempotency_key: `simulate:${parsed.data.userId}:${eventType}:${Date.now()}`,
   });
 
   return NextResponse.json({ event });

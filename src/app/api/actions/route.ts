@@ -23,6 +23,7 @@ const Schema = z.discriminatedUnion("action", [
   }),
 ]);
 
+/** @deprecated Prefer POST /api/v1/actions/* */
 export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
   const parsed = Schema.safeParse(body);
@@ -34,9 +35,14 @@ export async function POST(req: Request) {
     case "log_medication": {
       const event = await ingestEvent({
         userId: parsed.data.userId,
-        type: parsed.data.taken ? "adherence_confirmed" : "adherence_missed",
+        type: parsed.data.taken ? "user_checkin" : "adherence_missed",
         source: "user",
-        payload: { note: parsed.data.note ?? null },
+        payload: {
+          adherence_log: true,
+          taken: parsed.data.taken,
+          note: parsed.data.note ?? null,
+        },
+        idempotency_key: `legacy_log_med:${parsed.data.userId}:${Date.now()}`,
       });
       return NextResponse.json({ event });
     }
@@ -50,15 +56,17 @@ export async function POST(req: Request) {
           severity: parsed.data.severity,
           note: parsed.data.note ?? null,
         },
+        idempotency_key: `legacy_symptom:${parsed.data.userId}:${Date.now()}`,
       });
       return NextResponse.json({ event });
     }
     case "request_help": {
       const event = await ingestEvent({
         userId: parsed.data.userId,
-        type: "escalation_triggered",
+        type: "request_help",
         source: "user",
         payload: { reason: parsed.data.reason ?? "User requested help" },
+        idempotency_key: `legacy_help:${parsed.data.userId}:${Date.now()}`,
       });
       return NextResponse.json({ event });
     }

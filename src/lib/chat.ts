@@ -1,8 +1,18 @@
-import { getMessages, mutate, upsertMemory } from "./store";
-import type { ChatMessage, EventType } from "./types";
+import {
+  getMessages,
+  mutate,
+  upsertMemory,
+  appendMemorySnapshot,
+  getLatestMemorySnapshot,
+  createEscalation,
+  appendKpiEvent,
+} from "./store";
+import type { ChatMessage, EventType, StructuredCoachResponse } from "./types";
 import { newId } from "./id";
-import { generateChatReply, summarizeConversation } from "./ai";
+import { generateChatReply, summarizeConversation, extractOpenThreads } from "./ai";
 import { ingestEvent } from "./events";
+
+const SUMMARY_MESSAGE_INTERVAL = 8;
 
 interface AssistantMessageInput {
   userId: string;
@@ -10,23 +20,31 @@ interface AssistantMessageInput {
   eventId?: string;
   kind?: NonNullable<ChatMessage["meta"]>["kind"];
   eventType?: EventType;
+  structured?: StructuredCoachResponse;
 }
 
 export async function appendAssistantMessage(
   input: AssistantMessageInput,
 ): Promise<ChatMessage> {
   return mutate(async (db) => {
+    const metadata: Record<string, unknown> = {
+      kind: input.kind ?? "chat",
+      eventType: input.eventType,
+      structured: input.structured,
+    };
+    if (input.eventId) metadata.linked_event_ids = [input.eventId];
     const msg: ChatMessage = {
       id: newId("msg"),
       user_id: input.userId,
       role: "assistant",
       content: input.content,
       created_at: new Date().toISOString(),
-      event_id: input.eventId,
+      metadata,
       meta: {
         kind: input.kind ?? "chat",
         eventType: input.eventType,
       },
+      event_id: input.eventId,
     };
     db.messages.push(msg);
     return msg;
@@ -36,6 +54,7 @@ export async function appendAssistantMessage(
 export async function appendUserMessage(
   userId: string,
   content: string,
+  metadata?: Record<string, unknown>,
 ): Promise<ChatMessage> {
   return mutate(async (db) => {
     const msg: ChatMessage = {
@@ -44,6 +63,7 @@ export async function appendUserMessage(
       role: "user",
       content,
       created_at: new Date().toISOString(),
+      metadata: { kind: "chat", ...metadata },
       meta: { kind: "chat" },
     };
     db.messages.push(msg);
@@ -52,24 +72,15 @@ export async function appendUserMessage(
 }
 
 /**
- * Handle a free-form message from the user.
- *
- * We log a user_checkin event (so the timeline reflects engagement and
- * adherence signal), then generate a coaching reply grounded in the user's
- * current treatment state + conversation memory.
+ * Free-form chat: persist user message, run AI pipeline, persist assistant reply.
+ * Check-ins are created via `POST /v1/actions/checkin`, not on every keystroke (plan §6).
  */
 export async function handleUserChat(
   userId: string,
   content: string,
 ): Promise<ChatMessage> {
   await appendUserMessage(userId, content);
-
-  await ingestEvent({
-    userId,
-    type: "user_checkin",
-    source: "user",
-    payload: { message_preview: content.slice(0, 140) },
-  });
+  await appendKpiEvent(userId, "weekly_engagement_signal", { channel: "chat" });
 
   const history = await getMessages(userId);
   const reply = await generateChatReply({ userId, history });
@@ -78,23 +89,71 @@ export async function handleUserChat(
     userId,
     content: reply.message,
     kind: "chat",
+    structured: reply.structured,
   });
 
   if (reply.escalate) {
+    await createEscalation({
+      userId,
+      reason_code: "risk_signal",
+      linkedEventId: undefined,
+    });
     await ingestEvent({
       userId,
-      type: "escalation_triggered",
+      type: "escalation_created",
       source: "ai",
       payload: { reason: reply.escalationReason ?? "Risk detected in chat" },
+      idempotency_key: `escalation_chat:${assistant.id}`,
     });
   }
 
-  // Cheap, rolling memory update. Every ~6 turns we refresh the summary.
   const refreshed = await getMessages(userId);
-  if (refreshed.length % 6 === 0) {
-    const summary = await summarizeConversation(refreshed);
-    if (summary) await upsertMemory(userId, summary);
+  if (refreshed.length > 0 && refreshed.length % SUMMARY_MESSAGE_INTERVAL === 0) {
+    await runSummarisation(userId, refreshed);
   }
 
   return assistant;
+}
+
+export async function runSummarisation(
+  userId: string,
+  messages?: ChatMessage[],
+): Promise<{ summary: string; snapshot_id: string } | null> {
+  const all = messages ?? (await getMessages(userId));
+  if (all.length === 0) return null;
+  const summary = await summarizeConversation(all);
+  if (!summary) return null;
+  const open_threads = extractOpenThreads(summary);
+  const lastUser = [...all].reverse().find((m) => m.role === "user");
+  const snap = await appendMemorySnapshot({
+    user_id: userId,
+    summary,
+    open_threads,
+    source_message_from_id: null,
+    source_message_to_id: lastUser?.id ?? null,
+    created_at: new Date().toISOString(),
+  });
+  await upsertMemory(userId, {
+    summary,
+    open_threads,
+    last_summarized_message_id: lastUser?.id ?? null,
+  });
+  return { summary, snapshot_id: snap.id };
+}
+
+export async function buildChatSessionPacket(userId: string): Promise<{
+  messages: ChatMessage[];
+  treatment: import("./types").TreatmentState | undefined;
+  memory: import("./types").ConversationMemory | undefined;
+  latest_snapshot: import("./types").MemorySnapshot | undefined;
+}> {
+  const { getTreatment, getMemory } = await import("./store");
+  const all = await getMessages(userId);
+  const last20 = all.slice(-20);
+  const [treatment, memory, latest_snapshot] = await Promise.all([
+    getTreatment(userId),
+    getMemory(userId),
+    getLatestMemorySnapshot(userId),
+  ]);
+  return { messages: last20, treatment, memory, latest_snapshot };
 }

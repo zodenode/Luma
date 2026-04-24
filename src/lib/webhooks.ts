@@ -2,9 +2,10 @@ import { NextResponse } from "next/server";
 import { readDB } from "./store";
 import type { User } from "./types";
 
+/** Legacy shared-secret header (dev / simple integrations). */
 export function verifySecret(req: Request, envVar: string): boolean {
   const expected = process.env[envVar];
-  if (!expected) return true; // in dev without secret, accept
+  if (!expected) return true;
   const provided = req.headers.get("x-webhook-secret");
   return provided === expected;
 }

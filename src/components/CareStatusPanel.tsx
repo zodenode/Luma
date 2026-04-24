@@ -2,22 +2,22 @@ import clsx from "clsx";
 import type { TreatmentState, User } from "@/lib/types";
 
 const STAGE_LABEL: Record<TreatmentState["stage"], string> = {
-  intake: "Intake in progress",
-  pre_consult: "Awaiting consult",
+  pre_consult: "Pre-consult",
   post_consult: "Post-consult",
-  awaiting_fulfilment: "Awaiting medication",
   active_treatment: "Active treatment",
-  paused: "Paused",
-  escalated: "Clinician review",
 };
 
-const MED_LABEL: Record<string, string> = {
+const MED_LABEL: Record<TreatmentState["medication_status"], string> = {
   none: "No medication",
-  not_started: "Prescribed · not started",
+  prescribed: "Prescribed",
   shipped: "Shipped",
-  delivered: "Delivered",
   active: "Active",
-  refill_due: "Refill due",
+};
+
+const ADH_LABEL: Record<TreatmentState["adherence_indicator"], string> = {
+  unknown: "Unknown",
+  good: "On track",
+  at_risk: "At risk",
 };
 
 export default function CareStatusPanel({
@@ -27,11 +27,10 @@ export default function CareStatusPanel({
   user: User;
   treatment?: TreatmentState;
 }) {
-  const stage = treatment?.stage ?? "intake";
-  const med = treatment?.medication;
+  const stage = treatment?.stage ?? "pre_consult";
+  const med = treatment?.active_medication;
   const adherence = treatment?.adherence_score;
   const adherencePct = adherence != null ? Math.round(adherence * 100) : null;
-  const riskFlags = treatment?.risk_flags ?? [];
 
   return (
     <div className="card p-4">
@@ -41,14 +40,14 @@ export default function CareStatusPanel({
           className={clsx(
             "chip",
             stage === "active_treatment" && "border-luma-accent/50 text-luma-accent bg-luma-accent/10",
-            stage === "escalated" && "border-luma-danger/60 text-luma-danger bg-luma-danger/10",
-            stage !== "active_treatment" &&
-              stage !== "escalated" &&
-              "border-luma-border text-luma-muted",
+            stage !== "active_treatment" && "border-luma-border text-luma-muted",
           )}
         >
           <span className="w-1.5 h-1.5 rounded-full bg-current" />
           {STAGE_LABEL[stage]}
+        </span>
+        <span className="chip border-luma-border text-luma-muted text-[10px]">
+          {ADH_LABEL[treatment?.adherence_indicator ?? "unknown"]}
         </span>
       </div>
 
@@ -63,10 +62,10 @@ export default function CareStatusPanel({
               : "Not prescribed yet"
           }
         />
-        <Row label="State" value={med ? MED_LABEL[med.state] ?? med.state : "—"} />
+        <Row label="Fulfillment" value={MED_LABEL[treatment?.medication_status ?? "none"]} />
         {adherencePct != null && (
           <div>
-            <div className="text-xs text-luma-muted mb-1">Adherence</div>
+            <div className="text-xs text-luma-muted mb-1">Adherence score</div>
             <div className="h-1.5 rounded-full bg-luma-border overflow-hidden">
               <div
                 className={clsx(
@@ -74,8 +73,8 @@ export default function CareStatusPanel({
                   adherencePct >= 70
                     ? "bg-luma-accent"
                     : adherencePct >= 40
-                    ? "bg-luma-warn"
-                    : "bg-luma-danger",
+                      ? "bg-luma-warn"
+                      : "bg-luma-danger",
                 )}
                 style={{ width: `${adherencePct}%` }}
               />
@@ -91,19 +90,6 @@ export default function CareStatusPanel({
             Next action
           </div>
           <div className="text-sm mt-1">{treatment.next_recommended_action}</div>
-        </div>
-      )}
-
-      {riskFlags.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-1.5">
-          {riskFlags.map((flag) => (
-            <span
-              key={flag}
-              className="chip border-luma-danger/50 text-luma-danger bg-luma-danger/10"
-            >
-              {flag.replace(/_/g, " ")}
-            </span>
-          ))}
         </div>
       )}
     </div>

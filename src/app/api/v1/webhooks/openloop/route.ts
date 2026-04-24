@@ -1,13 +1,9 @@
 import { z } from "zod";
 import { ingestEvent } from "@/lib/events";
-import {
-  badRequest,
-  notFound,
-  resolveUserByAny,
-  verifySecret,
-} from "@/lib/webhooks";
-import { verifyWebhookHmac } from "@/lib/webhookSecurity";
-import { stableIdempotencyKey } from "@/lib/webhookSecurity";
+import { badRequest, notFound, resolveUserByAny } from "@/lib/webhooks";
+import { jsonOk } from "@/lib/v1";
+import { stableIdempotencyKey, verifyWebhookHmac, webhookUnauthorized } from "@/lib/webhookSecurity";
+import { getOrCreateRequestId, logLine } from "@/lib/requestContext";
 
 const Schema = z.object({
   event: z.enum(["consult_scheduled", "consult_completed", "prescription_issued"]),
@@ -17,26 +13,24 @@ const Schema = z.object({
   idempotency_key: z.string().optional(),
 });
 
-function authorized(req: Request, raw: string): boolean {
-  if (verifySecret(req, "OPENLOOP_WEBHOOK_SECRET")) return true;
+export const dynamic = "force-dynamic";
+
+export async function POST(req: Request) {
+  const requestId = getOrCreateRequestId(req);
+  const raw = await req.text();
   const sig =
     req.headers.get("x-signature") ??
     req.headers.get("x-hub-signature-256") ??
     req.headers.get("x-openloop-signature");
-  return verifyWebhookHmac(
-    raw,
-    sig,
-    process.env.OPENLOOP_WEBHOOK_HMAC_SECRET ?? process.env.OPENLOOP_WEBHOOK_SECRET,
-  );
-}
 
-export async function POST(req: Request) {
-  const raw = await req.text();
-  if (!authorized(req, raw)) {
-    return new Response(JSON.stringify({ error: "unauthorized" }), {
-      status: 401,
-      headers: { "content-type": "application/json" },
-    });
+  if (
+    !verifyWebhookHmac(
+      raw,
+      sig,
+      process.env.OPENLOOP_WEBHOOK_HMAC_SECRET ?? process.env.OPENLOOP_WEBHOOK_SECRET,
+    )
+  ) {
+    return webhookUnauthorized();
   }
 
   let body: unknown;
@@ -67,8 +61,6 @@ export async function POST(req: Request) {
     idempotency_key: idem,
   });
 
-  return new Response(JSON.stringify({ ok: true, event_id: event.id }), {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  });
+  logLine("info", requestId, "webhook_openloop", { event_id: event.id, userId: user.id });
+  return jsonOk(req, { ok: true, event_id: event.id });
 }

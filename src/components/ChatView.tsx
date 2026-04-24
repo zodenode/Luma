@@ -40,7 +40,9 @@ export default function ChatView({
 
 function MessageBubble({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === "user";
-  const kindLabel = msg.meta?.kind && msg.meta.kind !== "chat" ? msg.meta.kind.replace("_", " ") : null;
+  const meta = msg.metadata ?? {};
+  const kind = (meta.kind as string | undefined) ?? msg.meta?.kind;
+  const kindLabel = kind && kind !== "chat" ? String(kind).replace(/_/g, " ") : null;
 
   return (
     <div className={clsx("flex", isUser ? "justify-end" : "justify-start")}>

@@ -11,10 +11,10 @@ const EVENT_LABEL: Record<EventType, string> = {
   user_checkin: "Check-in",
   symptom_reported: "Symptom reported",
   adherence_missed: "Dose missed",
-  adherence_confirmed: "Dose logged",
+  request_help: "Help requested",
+  ai_response_generated: "AI follow-up",
+  escalation_created: "Escalation",
   refill_due: "Refill due",
-  escalation_triggered: "Escalation",
-  ai_followup: "AI follow-up",
 };
 
 const DOT: Record<EventType, string> = {
@@ -27,10 +27,10 @@ const DOT: Record<EventType, string> = {
   user_checkin: "bg-luma-muted",
   symptom_reported: "bg-luma-warn",
   adherence_missed: "bg-luma-warn",
-  adherence_confirmed: "bg-luma-accent",
+  request_help: "bg-luma-danger",
+  ai_response_generated: "bg-luma-muted",
+  escalation_created: "bg-luma-danger",
   refill_due: "bg-luma-warn",
-  escalation_triggered: "bg-luma-danger",
-  ai_followup: "bg-luma-muted",
 };
 
 export default function CareTimeline({ events }: { events: CareEvent[] }) {
@@ -53,7 +53,7 @@ export default function CareTimeline({ events }: { events: CareEvent[] }) {
               />
               <div className="text-sm">{EVENT_LABEL[e.type]}</div>
               <div className="text-[11px] text-luma-muted">
-                {formatTime(e.timestamp)} · {e.source}
+                {formatTime(e.occurred_at)} · {e.source}
               </div>
             </li>
           ))}

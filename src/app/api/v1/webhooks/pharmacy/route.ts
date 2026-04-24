@@ -1,12 +1,9 @@
 import { z } from "zod";
 import { ingestEvent } from "@/lib/events";
-import {
-  badRequest,
-  notFound,
-  resolveUserByAny,
-  verifySecret,
-} from "@/lib/webhooks";
-import { stableIdempotencyKey, verifyWebhookHmac } from "@/lib/webhookSecurity";
+import { badRequest, notFound, resolveUserByAny } from "@/lib/webhooks";
+import { jsonOk } from "@/lib/v1";
+import { stableIdempotencyKey, verifyWebhookHmac, webhookUnauthorized } from "@/lib/webhookSecurity";
+import { getOrCreateRequestId, logLine } from "@/lib/requestContext";
 
 const Schema = z.object({
   event: z.enum(["medication_shipped", "medication_delivered", "refill_due"]),
@@ -16,26 +13,24 @@ const Schema = z.object({
   idempotency_key: z.string().optional(),
 });
 
-function authorized(req: Request, raw: string): boolean {
-  if (verifySecret(req, "PHARMACY_WEBHOOK_SECRET")) return true;
+export const dynamic = "force-dynamic";
+
+export async function POST(req: Request) {
+  const requestId = getOrCreateRequestId(req);
+  const raw = await req.text();
   const sig =
     req.headers.get("x-signature") ??
     req.headers.get("x-hub-signature-256") ??
     req.headers.get("x-pharmacy-signature");
-  return verifyWebhookHmac(
-    raw,
-    sig,
-    process.env.PHARMACY_WEBHOOK_HMAC_SECRET ?? process.env.PHARMACY_WEBHOOK_SECRET,
-  );
-}
 
-export async function POST(req: Request) {
-  const raw = await req.text();
-  if (!authorized(req, raw)) {
-    return new Response(JSON.stringify({ error: "unauthorized" }), {
-      status: 401,
-      headers: { "content-type": "application/json" },
-    });
+  if (
+    !verifyWebhookHmac(
+      raw,
+      sig,
+      process.env.PHARMACY_WEBHOOK_HMAC_SECRET ?? process.env.PHARMACY_WEBHOOK_SECRET,
+    )
+  ) {
+    return webhookUnauthorized();
   }
 
   let body: unknown;
@@ -66,8 +61,6 @@ export async function POST(req: Request) {
     idempotency_key: idem,
   });
 
-  return new Response(JSON.stringify({ ok: true, event_id: event.id }), {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  });
+  logLine("info", requestId, "webhook_pharmacy", { event_id: event.id, userId: user.id });
+  return jsonOk(req, { ok: true, event_id: event.id });
 }
