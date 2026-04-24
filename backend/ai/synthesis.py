@@ -67,6 +67,21 @@ def _event_themes(recent: list[dict[str, Any]], limit: int = 25) -> list[str]:
         elif et == "prescription_schedule_set" and "schedule_change" not in seen:
             themes.append("schedule_change")
             seen.add("schedule_change")
+        elif et == "daily_checkin_completed" and "daily_continuity" not in seen:
+            themes.append("daily_continuity")
+            seen.add("daily_continuity")
+        elif et == "weekly_reflection_submitted" and "weekly_learning_loop" not in seen:
+            themes.append("weekly_learning_loop")
+            seen.add("weekly_learning_loop")
+        elif et == "biomarker_recorded" and "longitudinal_metrics" not in seen:
+            themes.append("longitudinal_metrics")
+            seen.add("longitudinal_metrics")
+        elif et == "cost_quote_noted" and "access_cost_stress" not in seen:
+            themes.append("access_cost_stress")
+            seen.add("access_cost_stress")
+        elif et == "external_data_ingested" and "platform_sync" not in seen:
+            themes.append("platform_sync")
+            seen.add("platform_sync")
     return list(reversed(themes))
 
 
@@ -88,6 +103,16 @@ def compute_coaching_synthesis(
 
     missed_7d = int(metrics.get("medication_missed_count_7d") or 0)
     symptom_peak = _recent_symptom_peak(recent)
+
+    retention = state.get("retention") if isinstance(state.get("retention"), dict) else {}
+    check_in = retention.get("check_in") if isinstance(retention.get("check_in"), dict) else {}
+    streak = int(check_in.get("streak_current_days") or 0)
+    submitted_today = bool(check_in.get("submitted_today"))
+    gam = retention.get("gamification") if isinstance(retention.get("gamification"), dict) else {}
+    engagement_points = int(gam.get("engagement_points") or 0)
+    longit = retention.get("longitudinal") if isinstance(retention.get("longitudinal"), dict) else {}
+    correlations = longit.get("correlations_top") if isinstance(longit.get("correlations_top"), list) else []
+    last_reflection = longit.get("last_weekly_reflection")
     sched = state.get("prescription_schedule") or treatment.get("prescription_schedule")
     sched_brief = _schedule_brief(sched if isinstance(sched, dict) else None)
 
@@ -110,6 +135,11 @@ def compute_coaching_synthesis(
 
     if not rationale_parts:
         rationale_parts.append("Risk and recent pattern support continuity and reinforcement.")
+
+    if stance == "maintain_momentum" and streak >= 5 and submitted_today:
+        rationale_parts.append(
+            "Strong check-in streak with today's check-in logged; reinforce habits and the next micro-goal."
+        )
 
     themes = _event_themes(recent)
 
@@ -138,6 +168,10 @@ def compute_coaching_synthesis(
         )
     if not recent:
         gaps.append("Sparse recent_events; lean on explicit user message and avoid inventing history.")
+    if streak == 0 and not submitted_today:
+        gaps.append(
+            "No current daily check-in streak in state; do not assume the user completed today's check-in."
+        )
 
     priority_topics: list[str] = []
     if stance == "escalate_support":
@@ -150,6 +184,11 @@ def compute_coaching_synthesis(
         priority_topics.extend(["symptom_triggers", "self_monitoring", "when_to_escalate"])
     else:
         priority_topics.extend(["sustain_habits", "motivation", "fine_tuning"])
+
+    if isinstance(last_reflection, dict) and last_reflection.get("differences_noted"):
+        priority_topics.append("week_over_week_differences")
+    if correlations:
+        priority_topics.append("metric_correlations_as_hypotheses_not_causation")
 
     rule_lines: list[str] = []
     for r in rules[:8]:
@@ -188,6 +227,7 @@ def compute_coaching_synthesis(
             "maintain_momentum": [
                 "What is one habit from last week you are quietly proud of?",
                 "Where do you want slightly more structure versus more flexibility?",
+                "Compared to what you noted last week, what felt different in your routine or environment?",
             ],
         },
     }
@@ -205,6 +245,10 @@ def compute_coaching_synthesis(
             "recent_event_types_tail": [e.get("event_type") for e in recent[-8:] if isinstance(e, dict)],
             "symptom_severity_peak_in_window": symptom_peak,
             "medication_missed_7d": missed_7d,
+            "check_in_streak_days": streak,
+            "check_in_submitted_today": submitted_today,
+            "engagement_points": engagement_points,
+            "top_metric_correlations": correlations[:3],
         },
         "response_blueprint": blueprint,
     }

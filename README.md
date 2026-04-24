@@ -47,6 +47,15 @@ tests/
 | POST | `/v1/events/consult_completed` | Consult completed |
 | POST | `/v1/events/prescription_schedule` | Set full Rx schedule (`prescription_schedule_set` → state) |
 | GET | `/v1/users/{external_user_id}/state` | Current materialised state snapshot |
+| POST | `/v1/events/daily_checkin` | Daily retention check-in (one per UTC day); updates streak + gamification points |
+| POST | `/v1/events/weekly_reflection` | Weekly “what changed” reflection; feeds coaching continuity |
+| POST | `/v1/events/biomarker` | Longitudinal metric point (e.g. BMI, weight); powers series + same-day correlations |
+| POST | `/v1/events/cost_quote` | Patient-reported price / access signal (retention + barrier context) |
+| POST | `/v1/events/external_series` | Batch ingest third-party metric points into the longitudinal stream |
+
+`user_state.retention` summarises check-in streaks, engagement points, biomarker series, and top same-calendar-day metric correlations (hypothesis-only in coaching copy).
+
+**Retention dashboard (dev):** with the API running, open `/static/retention_dashboard.html` to visualise `user_state.retention` for a given external user id.
 
 `user_id` in JSON bodies is the **external** id (`users.external_id`); internal UUID is created automatically.
 

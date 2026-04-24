@@ -31,6 +31,22 @@ DEFAULT_RULES: list[dict] = [
             "actions": ["send_ai_message", "openloop_notify"],
         },
     },
+    {
+        "name": "Daily check-in → retention touchpoint",
+        "definition": {
+            "event_type": "daily_checkin_completed",
+            "conditions": {},
+            "actions": ["send_ai_message"],
+        },
+    },
+    {
+        "name": "Weekly reflection → coaching touchpoint",
+        "definition": {
+            "event_type": "weekly_reflection_submitted",
+            "conditions": {},
+            "actions": ["send_ai_message"],
+        },
+    },
 ]
 
 

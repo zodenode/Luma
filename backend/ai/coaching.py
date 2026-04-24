@@ -194,6 +194,43 @@ def generate_coaching_response(
             "pair this chat with your clinician's guidance."
         )
 
+    ret = state.get("retention") if isinstance(state.get("retention"), dict) else {}
+    if ret:
+        ci = ret.get("check_in") if isinstance(ret.get("check_in"), dict) else {}
+        gm = ret.get("gamification") if isinstance(ret.get("gamification"), dict) else {}
+        lg = ret.get("longitudinal") if isinstance(ret.get("longitudinal"), dict) else {}
+        lines = [
+            "## Retention snapshot",
+            f"- Check-in streak: **{ci.get('streak_current_days', '—')}** days (best: {ci.get('streak_best_days', '—')})",
+            f"- Check-in logged today: **{ci.get('submitted_today', False)}**",
+            f"- Engagement points (internal): **{gm.get('engagement_points', '—')}**",
+        ]
+        corr = lg.get("correlations_top") if isinstance(lg.get("correlations_top"), list) else []
+        if corr:
+            lines.append(
+                "- Same-calendar-day metric pairs (hypothesis only, not diagnosis): "
+                + "; ".join(
+                    f"{c.get('metric_a')}/{c.get('metric_b')} r≈{c.get('pearson_r')} (n={c.get('n_days')})"
+                    for c in corr[:4]
+                    if isinstance(c, dict)
+                )
+            )
+        ref = lg.get("last_weekly_reflection") if isinstance(lg.get("last_weekly_reflection"), dict) else None
+        if ref and ref.get("differences_noted"):
+            preview = str(ref.get("differences_noted"))[:280]
+            if len(str(ref.get("differences_noted"))) > 280:
+                preview += "…"
+            lines.append(f"- Last weekly reflection (excerpt): {preview}")
+        sections.append("\n".join(lines))
+
+    lw = treatment_ctx.get("last_weekly_reflection_summary")
+    if isinstance(lw, dict) and lw.get("differences_noted"):
+        sections.append(
+            "## Continuity from last week\n"
+            f"What you said you did differently: {lw.get('differences_noted')[:600]}"
+            + ("…" if len(str(lw.get("differences_noted"))) > 600 else "")
+        )
+
     safety = _format_safety(synthesis)
     if safety:
         sections.append("## Safety\n" + safety)

@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.core.models import Event, UserState
+from backend.core.retention import compute_retention_block
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -46,6 +47,11 @@ def refresh_user_state(db: Session, user_id: str) -> dict[str, Any]:
         "consult_completed",
         "lab_result_received",
         "prescription_schedule_set",
+        "daily_checkin_completed",
+        "weekly_reflection_submitted",
+        "biomarker_recorded",
+        "cost_quote_noted",
+        "external_data_ingested",
     }
 
     prescription_schedule: dict[str, Any] | None = None
@@ -105,6 +111,7 @@ def refresh_user_state(db: Session, user_id: str) -> dict[str, Any]:
             "medication_missed_count_30d": missed_30d,
             "symptom_severity_max_recent": symptom_severity_max,
         },
+        "retention": compute_retention_block(events, now=now),
     }
 
     row = db.get(UserState, user_id)
