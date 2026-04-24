@@ -1,0 +1,35 @@
+{
+  "name": "luma",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Luma — AI health coaching layer on top of telehealth + pharmacy (OpenLoop wrapper MVP).",
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "lint": "next lint",
+    "seed": "tsx scripts/seed.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "14.2.15",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "openai": "4.68.4",
+    "zod": "3.23.8",
+    "clsx": "2.1.1",
+    "nanoid": "5.0.7"
+  },
+  "devDependencies": {
+    "@types/node": "20.14.10",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "autoprefixer": "10.4.20",
+    "postcss": "8.4.47",
+    "tailwindcss": "3.4.13",
+    "tsx": "4.19.1",
+    "typescript": "5.5.3",
+    "eslint": "8.57.0",
+    "eslint-config-next": "14.2.15"
+  }
+}
