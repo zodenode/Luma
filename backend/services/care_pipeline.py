@@ -24,7 +24,7 @@ def get_or_create_user(db: Session, external_user_id: str) -> User:
     return u
 
 
-def _recent_events(db: Session, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
+def _recent_events(db: Session, user_id: str, limit: int = 40) -> list[dict[str, Any]]:
     rows = db.scalars(
         select(Event)
         .where(Event.user_id == user_id)
