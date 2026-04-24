@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { CareEvent, ChatMessage, TreatmentState, User } from "@/lib/types";
 import CareStatusPanel from "./CareStatusPanel";
 import CareTimeline from "./CareTimeline";
+import CareContextCard from "./CareContextCard";
 import QuickActionsBar from "./QuickActionsBar";
 import ChatView from "./ChatView";
 import SimulatePanel from "./SimulatePanel";
@@ -38,6 +39,18 @@ export default function CareLoop({
   }, [user.id]);
 
   useEffect(() => {
+    void (async () => {
+      const res = await fetch(`/api/v1/chat/session?userId=${encodeURIComponent(user.id)}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (Array.isArray(data.messages)) setMessages(data.messages);
+      if (data.treatment_state) setTreatment(data.treatment_state);
+    })();
+  }, [user.id]);
+
+  useEffect(() => {
     // Light polling so webhook-driven events show up when triggered elsewhere.
     pollRef.current = window.setInterval(refresh, 4000);
     return () => {
@@ -57,7 +70,7 @@ export default function CareLoop({
     };
     setMessages((prev) => [...prev, optimistic]);
     try {
-      const res = await fetch("/api/chat", {
+      const res = await fetch("/api/v1/chat/message", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ userId: user.id, content }),
@@ -74,7 +87,13 @@ export default function CareLoop({
   async function runAction(body: Record<string, unknown>) {
     setBusy(true);
     try {
-      const res = await fetch("/api/actions", {
+      const action = body.action as string;
+      let url = "/api/actions";
+      if (action === "log_medication") url = "/api/v1/actions/log-medication";
+      else if (action === "checkin_symptom") url = "/api/actions";
+      else if (action === "request_help") url = "/api/v1/actions/request-help";
+      else if (action === "quick_checkin") url = "/api/v1/actions/checkin";
+      const res = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -123,6 +142,7 @@ export default function CareLoop({
 
       <div className="flex-1 mx-auto max-w-7xl w-full px-5 py-6 grid grid-cols-12 gap-6">
         <aside className="col-span-12 lg:col-span-3 space-y-6">
+          <CareContextCard user={user} treatment={treatment} />
           <CareStatusPanel user={user} treatment={treatment} />
           <CareTimeline events={events} />
         </aside>

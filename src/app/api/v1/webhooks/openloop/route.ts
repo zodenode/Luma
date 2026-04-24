@@ -1,16 +1,15 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { ingestEvent } from "@/lib/events";
+import { ingestOpenLoopWebhook } from "@/lib/webhook-ingest";
+import { verifyOpenLoopRequest } from "@/lib/webhook-auth";
 import {
   badRequest,
   notFound,
   resolveUserByAny,
-  unauthorized,
 } from "@/lib/webhooks";
-import { verifyPharmacyRequest } from "@/lib/webhook-auth";
 
 const Schema = z.object({
-  event: z.enum(["medication_shipped", "medication_delivered", "refill_due"]),
+  event: z.enum(["consult_scheduled", "consult_completed", "prescription_issued"]),
   userId: z.string().optional(),
   openloopId: z.string().optional(),
   data: z.record(z.string(), z.unknown()).default({}),
@@ -19,7 +18,9 @@ const Schema = z.object({
 
 export async function POST(req: Request) {
   const raw = await req.text();
-  if (!verifyPharmacyRequest(req, raw)) return unauthorized();
+  if (!verifyOpenLoopRequest(req, raw)) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
 
   let body: unknown;
   try {
@@ -39,15 +40,14 @@ export async function POST(req: Request) {
 
   const idem =
     parsed.data.idempotency_key ??
-    `pharmacy:${parsed.data.event}:${parsed.data.userId ?? parsed.data.openloopId ?? user.id}`;
+    `openloop:${parsed.data.event}:${parsed.data.userId ?? parsed.data.openloopId ?? user.id}`;
 
-  const event = await ingestEvent({
+  const result = await ingestOpenLoopWebhook({
     userId: user.id,
     type: parsed.data.event,
-    source: "pharmacy",
     payload: parsed.data.data,
     idempotencyKey: idem,
   });
 
-  return NextResponse.json({ ok: true, event_id: event.id });
+  return NextResponse.json({ ok: true, event_id: result.event_id });
 }

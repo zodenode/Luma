@@ -14,9 +14,12 @@ loop → fulfilment → adherence → escalation.
 - **OpenAI** for coaching replies (with a deterministic mock fallback — the app
   runs with no API key)
 - **JSON file store** at `data/luma.json` for the event log, users, treatment
-  state, messages, and conversation memory (simple, swappable)
+  state, messages, conversation memory, memory snapshots, escalations, chat
+  sessions, and KPI markers (simple, swappable)
 
-No database, no build tools you don't already have.
+**Postgres:** the canonical DDL from the engineering plan lives at
+`db/migrations/001_ai_coaching_mvp.sql` for production deployments; the default
+dev path remains the JSON store.
 
 ## Getting started
 
@@ -88,8 +91,9 @@ ingestEvent(event)
   - **Quick actions bar** — log dose, check-in symptom, ask AI, request help
 - A `SimulatePanel` in the header lets you fire external events for demo
 
-The care loop view polls `/api/users/[userId]` every 4 seconds so events
-triggered elsewhere (webhooks, other tabs) appear without a reload.
+The care loop calls `GET /api/v1/chat/session` on mount (rehydration) and polls
+`/api/users/[userId]` every 4 seconds so events triggered elsewhere (webhooks,
+other tabs) appear without a reload.
 
 ### Backend (`src/app/api`)
 
@@ -100,15 +104,21 @@ Thin orchestration layer — the PRD's five services, kept flat:
 | Intake service | `POST /api/intake` → `lib/intake.ts` |
 | Event ingestion service | `lib/events.ts` (`ingestEvent`) |
 | AI response service | `lib/ai.ts` (`generateEventFollowup`, `generateChatReply`, `summarizeConversation`) |
-| Webhook handlers | `POST /api/webhooks/openloop`, `POST /api/webhooks/pharmacy` |
+| Webhook handlers | `POST /api/webhooks/*` (shared secret or HMAC) and `POST /api/v1/webhooks/*` (HMAC) |
 | User state store | `lib/store.ts` (JSON file, atomic writes, serialized) |
 
-Plus:
+**Versioned API (`/api/v1/...`)** — matches `docs/ai-coaching-mvp-engineering-plan.md`:
 
-- `POST /api/chat` — user chat turn (logs `user_checkin` + replies)
-- `POST /api/actions` — quick-actions entry point
-- `POST /api/simulate` — dev-only shortcut that fires any external event
-- `GET  /api/users` / `GET /api/users/[userId]` — read-through for the UI
+- `GET /api/v1/chat/session?userId=` — last 20 messages + treatment state + memory snapshot; optional resume reply
+- `POST /api/v1/chat/message` — user chat (single AI reply; `user_checkin` uses `skipFollowup` to avoid double responses)
+- `POST /api/v1/chat/summarise` — force summary + snapshot
+- `GET /api/v1/care/state`, `GET /api/v1/care/timeline`
+- `POST /api/v1/actions/checkin`, `log-medication`, `request-help`
+- `GET /api/v1/escalations` — clinician queue
+- `POST /api/v1/webhooks/openloop` | `pharmacy` — HMAC body verification
+
+Legacy shortcuts (still work): `POST /api/chat`, `POST /api/actions`, `POST /api/simulate`,
+`GET /api/users`, `GET /api/users/[userId]`.
 
 ### Event model
 
@@ -118,10 +128,11 @@ All system behaviour is driven by events. Types live in `src/lib/types.ts`:
 intake_completed | consult_scheduled | consult_completed |
 prescription_issued | medication_shipped | medication_delivered |
 user_checkin | symptom_reported | adherence_missed | adherence_confirmed |
-refill_due | escalation_triggered | ai_followup
+refill_due | request_help | ai_response_generated | escalation_created |
+escalation_triggered | ai_followup | kpi_*
 ```
 
-Each event has `{ id, user_id, type, timestamp, source, payload }` and is
+Each event has `{ id, user_id, type, occurred_at, received_at, idempotency_key, source, payload }` and is
 appended to the event log. The reducer in `lib/events.ts` maps events →
 treatment state updates (stage transitions, medication state, adherence score,
 risk flags). The AI layer turns every event into a coach message.
@@ -134,7 +145,8 @@ See `src/lib/types.ts`. Matches the PRD:
 - `TreatmentState` — `stage`, `medication`, `adherence_score`, `next_recommended_action`, `risk_flags`
 - `CareEvent` — event log entry
 - `ChatMessage` — conversation history (with `event_id` back-links)
-- `ConversationMemory` — rolling summary used to keep continuity
+- `ConversationMemory` — rolling summary + `open_threads`
+- `MemorySnapshot`, `EscalationRecord`, `ChatSession`, `KpiMarker` — plan tables (JSON-backed)
 
 ### AI coaching engine
 
@@ -142,7 +154,8 @@ See `src/lib/types.ts`. Matches the PRD:
 
 - `generateEventFollowup(event)` — clinical/system event → coach message
 - `generateChatReply({ userId, history })` — user message → coach reply
-- `summarizeConversation(messages)` — rolling memory (~every 6 turns)
+- `summarizeConversation(messages)` — rolling memory (default every 8 messages via `CHAT_SUMMARY_EVERY_N`)
+- Structured coach JSON: `response_type`, `message`, `next_actions`, `adherence_risk`, `escalation_recommended`
 
 All prompts include:
 
@@ -156,14 +169,10 @@ set — useful for demos, CI, and local development.
 
 ### Escalation
 
-Two paths produce an `escalation_triggered` event:
-
-1. **Red-flag keyword detection** in user chat (chest pain, self-harm,
-   anaphylaxis, severe bleeding, pregnancy) — handled in `detectRedFlags()`.
-2. **User-initiated** via the 🆘 Request help quick action.
-
-When escalated, the treatment stage flips to `escalated`, a `clinician_escalation`
-risk flag is set, and the coach posts an acknowledgement message.
+Paths include: red-flag chat keywords → `escalation_triggered` (AI source);
+`request_help` → queue row + coach message; symptom severity ≥8 → `escalation_created`;
+rolling `adherence_missed` count → `adherence_decline` queue entry. List open items via
+`GET /api/v1/escalations?status=open`.
 
 ## Webhook integration
 
@@ -199,25 +208,16 @@ curl -X POST http://localhost:3000/api/webhooks/pharmacy \
 
 Supported events: `medication_shipped`, `medication_delivered`, `refill_due`.
 
-Both webhooks verify `x-webhook-secret` against `OPENLOOP_WEBHOOK_SECRET` /
-`PHARMACY_WEBHOOK_SECRET`. If either env var is unset, verification is
-skipped (dev mode).
+Verify with `x-webhook-secret` **or** HMAC: set `OPENLOOP_WEBHOOK_HMAC_SECRET` /
+`PHARMACY_WEBHOOK_HMAC_SECRET` and send header `X-Signature: sha256=<hex>` over the
+raw request body. Pass `idempotency_key` in JSON for safe retries.
 
 ## KPIs
 
-The data needed to compute every PRD KPI is on the event log:
-
-- **Post-consult retention (7 / 30 / 90d)** — time between `consult_completed`
-  and the most recent `user_checkin` / `adherence_confirmed` / chat event
-- **Medication adherence rate** — `adherence_confirmed` vs `adherence_missed`
-  per user (also surfaced as `TreatmentState.adherence_score`)
-- **% users engaging with AI weekly** — count unique users with a `user_checkin`
-  event in a rolling 7-day window
-- **Consult-to-second-action conversion** — users with `consult_completed` and
-  at least one user-sourced event afterwards
-
-An analytics dashboard is explicitly out of scope (per PRD §9) — the event log
-is the source of truth.
+The event log remains the source of truth; the MVP also appends lightweight
+`kpi_*` markers (`lib/kpi.ts`) for retention windows, weekly assistant engagement,
+adherence ratio events, and consult-to-second-action after the second meaningful
+post-consult action.
 
 ## Non-goals (per PRD §9)
 
@@ -230,4 +230,5 @@ wearables/RPM, complex analytics dashboards, multi-provider orchestration.
 - `npm run build` / `npm start` — production build
 - `npm run typecheck` — TypeScript check
 - `npm run lint` — Next.js ESLint
+- `npm run test` — Vitest unit tests
 - `npm run seed` — create a demo patient pre-loaded with consult + prescription + shipment events

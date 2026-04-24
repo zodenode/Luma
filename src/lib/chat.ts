@@ -1,84 +1,50 @@
-import { getMessages, mutate, upsertMemory } from "./store";
-import type { ChatMessage, EventType } from "./types";
-import { newId } from "./id";
-import { generateChatReply, summarizeConversation } from "./ai";
+import type { ChatMessage } from "./types";
+import {
+  appendAssistantMessage,
+  appendUserMessage,
+  getMessages,
+  upsertMemory,
+} from "./store";
+import { generateChatReply, maybeSummarizeAndSnapshot, summarizeConversation } from "./ai";
 import { ingestEvent } from "./events";
-
-interface AssistantMessageInput {
-  userId: string;
-  content: string;
-  eventId?: string;
-  kind?: NonNullable<ChatMessage["meta"]>["kind"];
-  eventType?: EventType;
-}
-
-export async function appendAssistantMessage(
-  input: AssistantMessageInput,
-): Promise<ChatMessage> {
-  return mutate(async (db) => {
-    const msg: ChatMessage = {
-      id: newId("msg"),
-      user_id: input.userId,
-      role: "assistant",
-      content: input.content,
-      created_at: new Date().toISOString(),
-      event_id: input.eventId,
-      meta: {
-        kind: input.kind ?? "chat",
-        eventType: input.eventType,
-      },
-    };
-    db.messages.push(msg);
-    return msg;
-  });
-}
-
-export async function appendUserMessage(
-  userId: string,
-  content: string,
-): Promise<ChatMessage> {
-  return mutate(async (db) => {
-    const msg: ChatMessage = {
-      id: newId("msg"),
-      user_id: userId,
-      role: "user",
-      content,
-      created_at: new Date().toISOString(),
-      meta: { kind: "chat" },
-    };
-    db.messages.push(msg);
-    return msg;
-  });
-}
+import { recordAssistantEngagement } from "./kpi";
 
 /**
  * Handle a free-form message from the user.
- *
- * We log a user_checkin event (so the timeline reflects engagement and
- * adherence signal), then generate a coaching reply grounded in the user's
- * current treatment state + conversation memory.
+ * Persists message, logs user_checkin (timeline) without duplicate AI follow-up,
+ * then generates one coaching reply.
  */
 export async function handleUserChat(
   userId: string,
   content: string,
+  options?: { resumedSession?: boolean },
 ): Promise<ChatMessage> {
-  await appendUserMessage(userId, content);
+  const userMsg = await appendUserMessage(userId, content);
 
   await ingestEvent({
     userId,
     type: "user_checkin",
     source: "user",
     payload: { message_preview: content.slice(0, 140) },
+    idempotencyKey: `user_checkin:${userMsg.id}`,
+    skipFollowup: true,
   });
 
   const history = await getMessages(userId);
-  const reply = await generateChatReply({ userId, history });
+  const reply = await generateChatReply({
+    userId,
+    history,
+    resumedSession: Boolean(options?.resumedSession),
+  });
 
   const assistant = await appendAssistantMessage({
     userId,
     content: reply.message,
     kind: "chat",
+    structured: reply.structured,
   });
+
+  await recordAssistantEngagement(userId);
 
   if (reply.escalate) {
     await ingestEvent({
@@ -86,15 +52,20 @@ export async function handleUserChat(
       type: "escalation_triggered",
       source: "ai",
       payload: { reason: reply.escalationReason ?? "Risk detected in chat" },
+      idempotencyKey: `escalation:chat:${assistant.id}`,
     });
   }
 
-  // Cheap, rolling memory update. Every ~6 turns we refresh the summary.
   const refreshed = await getMessages(userId);
-  if (refreshed.length % 6 === 0) {
-    const summary = await summarizeConversation(refreshed);
-    if (summary) await upsertMemory(userId, summary);
-  }
+  await maybeSummarizeAndSnapshot(userId, refreshed);
 
   return assistant;
+}
+
+export async function runSummariseJob(userId: string): Promise<{ summary: string } | { error: string }> {
+  const messages = await getMessages(userId);
+  const summary = await summarizeConversation(messages, true);
+  if (!summary) return { error: "nothing_to_summarize" };
+  await upsertMemory(userId, summary.text, summary.open_threads, summary.last_message_id);
+  return { summary: summary.text };
 }

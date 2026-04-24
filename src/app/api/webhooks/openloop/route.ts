@@ -6,20 +6,28 @@ import {
   notFound,
   resolveUserByAny,
   unauthorized,
-  verifySecret,
 } from "@/lib/webhooks";
+import { verifyOpenLoopRequest } from "@/lib/webhook-auth";
 
 const Schema = z.object({
   event: z.enum(["consult_scheduled", "consult_completed", "prescription_issued"]),
   userId: z.string().optional(),
   openloopId: z.string().optional(),
   data: z.record(z.string(), z.unknown()).default({}),
+  idempotency_key: z.string().optional(),
 });
 
 export async function POST(req: Request) {
-  if (!verifySecret(req, "OPENLOOP_WEBHOOK_SECRET")) return unauthorized();
+  const raw = await req.text();
+  if (!verifyOpenLoopRequest(req, raw)) return unauthorized();
 
-  const body = await req.json().catch(() => null);
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    return badRequest("invalid_json");
+  }
+
   const parsed = Schema.safeParse(body);
   if (!parsed.success) return badRequest("Invalid webhook payload");
 
@@ -29,11 +37,16 @@ export async function POST(req: Request) {
   });
   if (!user) return notFound("user_not_found");
 
+  const idem =
+    parsed.data.idempotency_key ??
+    `openloop:${parsed.data.event}:${parsed.data.userId ?? parsed.data.openloopId ?? user.id}`;
+
   const event = await ingestEvent({
     userId: user.id,
     type: parsed.data.event,
     source: "openloop",
     payload: parsed.data.data,
+    idempotencyKey: idem,
   });
 
   return NextResponse.json({ ok: true, event_id: event.id });
