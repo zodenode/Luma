@@ -9,6 +9,8 @@ python3 -m pip install -r requirements.txt
 DATABASE_URL=sqlite:///./luma.db python3 -m uvicorn backend.main:app --reload
 ```
 
+Open `http://127.0.0.1:8000/` for a small retention dashboard (static), or `/static/retention.html`.
+
 Tests:
 
 ```bash
@@ -46,7 +48,10 @@ tests/
 | POST | `/v1/events/medication_missed` | Adherence / missed dose |
 | POST | `/v1/events/consult_completed` | Consult completed |
 | POST | `/v1/events/prescription_schedule` | Set full Rx schedule (`prescription_schedule_set` → state) |
-| GET | `/v1/users/{external_user_id}/state` | Current materialised state snapshot |
+| GET | `/v1/users/{external_user_id}/state` | Materialised state + `retention` block + `retention_timeline` |
+| POST | `/v1/events/daily_check_in` | Daily retention touch (mood, note, optional `date_local`) |
+| POST | `/v1/events/series_measurement` | Longitudinal series point (`series_id`, `value`, `unit`, `source`) |
+| POST | `/v1/events/weekly_reflection` | Weekly “what changed” text (remembered in state for coaching) |
 
 `user_id` in JSON bodies is the **external** id (`users.external_id`); internal UUID is created automatically.
 
@@ -85,6 +90,7 @@ Post to `/v1/events/prescription_schedule` with a body like:
 - **users** — `id` (UUID), `external_id` (unique), `created_at`
 - **events** — append-only: `id`, `user_id`, `event_type`, `timestamp`, `payload` (JSON)
 - **user_state** — one row per user: `user_id` (PK), `snapshot` (JSON), `updated_at`
+  - Snapshot includes **`retention`**: streaks, lightweight gamification (points / level), last-90d **time series** per `series_id`, exploratory **day-aligned correlations** between series, and recent **weekly reflections** (for longitudinal coaching context).
 - **rules** — `id`, `name`, `definition` (JSON), `enabled`, `created_at`
 - **actions_log** — `id`, `user_id`, `action_type`, `payload`, `triggered_by_event_id`, `status`, `detail`, `created_at`
 

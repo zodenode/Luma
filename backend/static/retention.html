@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Luma — Retention & longitudinal view</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a222d;
+      --text: #e7ecf1;
+      --muted: #8b9aab;
+      --accent: #5da9e9;
+      --good: #6bcb77;
+      --warn: #e9c46a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 1.5rem;
+      max-width: 960px;
+      margin-inline: auto;
+    }
+    h1 { font-size: 1.35rem; font-weight: 600; margin-top: 0; }
+    h2 { font-size: 1rem; color: var(--muted); font-weight: 500; margin: 1.5rem 0 0.5rem; }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem; }
+    input, textarea, button, select {
+      font: inherit;
+      border-radius: 8px;
+      border: 1px solid #2d3a4a;
+      background: var(--panel);
+      color: var(--text);
+      padding: 0.5rem 0.65rem;
+      width: 100%;
+    }
+    textarea { min-height: 72px; resize: vertical; }
+    button {
+      cursor: pointer;
+      background: var(--accent);
+      color: #0a0e12;
+      border: none;
+      font-weight: 600;
+      margin-top: 0.5rem;
+      width: auto;
+      padding-inline: 1rem;
+    }
+    button.secondary { background: #2d3a4a; color: var(--text); }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+    @media (max-width: 640px) { .row { grid-template-columns: 1fr; } }
+    .panel {
+      background: var(--panel);
+      border-radius: 12px;
+      padding: 1rem;
+      margin-top: 1rem;
+      border: 1px solid #243040;
+    }
+    .stats { display: flex; flex-wrap: wrap; gap: 1rem; }
+    .stat { min-width: 120px; }
+    .stat b { font-size: 1.4rem; color: var(--good); }
+    .stat span { color: var(--muted); font-size: 0.8rem; display: block; }
+    pre {
+      background: #121820;
+      padding: 0.75rem;
+      border-radius: 8px;
+      overflow: auto;
+      font-size: 0.75rem;
+      color: #c5d4e0;
+      max-height: 320px;
+    }
+    .corr { font-size: 0.85rem; color: var(--warn); }
+    .hint { font-size: 0.8rem; color: var(--muted); margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Retention & longitudinal data</h1>
+  <p class="hint">
+    Demo UI for daily check-ins, measurements (BMI, weight, cost estimates from any source),
+    and weekly reflections. Data posts to the API and materialises into <code>user_state.retention</code>.
+  </p>
+
+  <div class="row">
+    <div>
+      <label for="uid">External user id</label>
+      <input id="uid" value="demo_user" />
+    </div>
+    <div>
+      <label>&nbsp;</label>
+      <button type="button" class="secondary" id="btnLoad">Load state</button>
+    </div>
+  </div>
+
+  <div class="panel" id="viz">
+    <div class="stats" id="stats"></div>
+    <h2>Correlations (exploratory, same calendar day)</h2>
+    <div id="correlations" class="corr"></div>
+    <h2>Recent reflections</h2>
+    <div id="reflections"></div>
+    <h2>Raw retention block</h2>
+    <pre id="raw"></pre>
+  </div>
+
+  <div class="row" style="margin-top:1rem;">
+    <div class="panel">
+      <h2>Daily check-in</h2>
+      <label>Mood (1–5)</label>
+      <input id="mood" type="number" min="1" max="5" placeholder="optional" />
+      <label>Note</label>
+      <textarea id="note" placeholder="How are doses landing today?"></textarea>
+      <button type="button" id="btnCheckin">Submit check-in</button>
+    </div>
+    <div class="panel">
+      <h2>Series measurement</h2>
+      <label>series_id</label>
+      <input id="seriesId" value="weight_kg" />
+      <label>Value</label>
+      <input id="seriesVal" type="number" step="any" value="82.4" />
+      <label>Unit</label>
+      <input id="seriesUnit" value="kg" />
+      <label>Source</label>
+      <input id="seriesSource" value="patient_entered" />
+      <button type="button" id="btnSeries">Log measurement</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Weekly reflection</h2>
+    <label>Week number (optional)</label>
+    <input id="weekIdx" type="number" placeholder="1" />
+    <label>What did you do differently this week?</label>
+    <textarea id="reflect" placeholder="e.g. walked after dinner Mon–Wed; pharmacy switched to generic."></textarea>
+    <button type="button" id="btnReflect">Save reflection</button>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    async function api(path, body) {
+      const r = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    }
+
+    function renderState(data) {
+      const ret = data.retention || {};
+      const streak = ret.streak || {};
+      const gam = ret.gamification || {};
+      const act = ret.activity_30d || {};
+      $("stats").innerHTML = `
+        <div class="stat"><b>${streak.current_days ?? 0}</b><span>day streak</span></div>
+        <div class="stat"><b>${streak.best_days ?? 0}</b><span>best streak</span></div>
+        <div class="stat"><b>${gam.level ?? 1}</b><span>level (${gam.total_points ?? 0} pts)</span></div>
+        <div class="stat"><b>${act.daily_check_ins ?? 0}</b><span>check-ins (30d)</span></div>
+        <div class="stat"><b>${act.series_measurements ?? 0}</b><span>measurements (30d)</span></div>
+      `;
+      const corrs = ret.correlations || [];
+      $("correlations").innerHTML = corrs.length
+        ? corrs.map(c =>
+            `<div>r=${c.pearson_r} · ${c.series_a} vs ${c.series_b} · n=${c.overlapping_days} days</div>`
+          ).join("")
+        : "<span style='color:var(--muted)'>Need overlapping days across two series (≥3) to show correlation.</span>";
+      const refs = ret.weekly_reflections_recent || [];
+      $("reflections").innerHTML = refs.length
+        ? refs.map(r => `<p><small>${r.t}</small><br>${(r.text || "").slice(0, 280)}${(r.text || "").length > 280 ? "…" : ""}</p>`).join("")
+        : "<span style='color:var(--muted)'>No reflections yet.</span>";
+      $("raw").textContent = JSON.stringify(ret, null, 2);
+    }
+
+    async function loadState() {
+      const uid = $("uid").value.trim();
+      const r = await fetch(`/v1/users/${encodeURIComponent(uid)}/state`);
+      if (!r.ok) throw new Error(await r.text());
+      renderState(await r.json());
+    }
+
+    $("btnLoad").onclick = () => loadState().catch((e) => alert(e));
+    $("btnCheckin").onclick = async () => {
+      const uid = $("uid").value.trim();
+      const mood = $("mood").value ? parseInt($("mood").value, 10) : null;
+      await api("/v1/events/daily_check_in", { user_id: uid, mood, note: $("note").value || null });
+      $("note").value = "";
+      await loadState();
+    };
+    $("btnSeries").onclick = async () => {
+      const uid = $("uid").value.trim();
+      await api("/v1/events/series_measurement", {
+        user_id: uid,
+        series_id: $("seriesId").value.trim(),
+        value: parseFloat($("seriesVal").value),
+        unit: $("seriesUnit").value || null,
+        source: $("seriesSource").value || null,
+      });
+      await loadState();
+    };
+    $("btnReflect").onclick = async () => {
+      const uid = $("uid").value.trim();
+      const wi = $("weekIdx").value ? parseInt($("weekIdx").value, 10) : null;
+      await api("/v1/events/weekly_reflection", {
+        user_id: uid,
+        text: $("reflect").value,
+        week_index: wi,
+        theme: "what_changed",
+      });
+      $("reflect").value = "";
+      await loadState();
+    };
+
+    loadState().catch(() => {});
+  </script>
+</body>
+</html>

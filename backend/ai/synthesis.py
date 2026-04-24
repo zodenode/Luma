@@ -67,6 +67,15 @@ def _event_themes(recent: list[dict[str, Any]], limit: int = 25) -> list[str]:
         elif et == "prescription_schedule_set" and "schedule_change" not in seen:
             themes.append("schedule_change")
             seen.add("schedule_change")
+        elif et == "daily_check_in" and "daily_rhythm" not in seen:
+            themes.append("daily_rhythm")
+            seen.add("daily_rhythm")
+        elif et == "series_measurement" and "longitudinal_tracking" not in seen:
+            themes.append("longitudinal_tracking")
+            seen.add("longitudinal_tracking")
+        elif et == "weekly_reflection" and "meaning_making" not in seen:
+            themes.append("meaning_making")
+            seen.add("meaning_making")
     return list(reversed(themes))
 
 
@@ -88,6 +97,9 @@ def compute_coaching_synthesis(
 
     missed_7d = int(metrics.get("medication_missed_count_7d") or 0)
     symptom_peak = _recent_symptom_peak(recent)
+    retention = state.get("retention") if isinstance(state.get("retention"), dict) else {}
+    streak = (retention.get("streak") or {}) if isinstance(retention, dict) else {}
+    streak_days = int(streak.get("current_days") or 0)
     sched = state.get("prescription_schedule") or treatment.get("prescription_schedule")
     sched_brief = _schedule_brief(sched if isinstance(sched, dict) else None)
 
@@ -104,6 +116,9 @@ def compute_coaching_synthesis(
     elif any(e.get("event_type") == "consult_completed" for e in recent[-8:]):
         stance = "onboard_integrate"
         rationale_parts.append("Recent consult; bridge clinical plan to daily behaviour.")
+    elif streak_days >= 7 and missed_7d == 0 and symptom_peak < 4:
+        stance = "maintain_momentum"
+        rationale_parts.append("Strong check-in streak with stable signals; reinforce identity-level habits.")
     elif symptom_peak >= 4:
         stance = "symptom_stabilize"
         rationale_parts.append("Meaningful symptom intensity; validate and co-plan coping.")
@@ -138,6 +153,12 @@ def compute_coaching_synthesis(
         )
     if not recent:
         gaps.append("Sparse recent_events; lean on explicit user message and avoid inventing history.")
+    corr = retention.get("correlations") if isinstance(retention, dict) else None
+    if isinstance(corr, list) and corr:
+        safety_notes.append(
+            "Time-series correlations in context are exploratory statistics only; "
+            "do not infer causation or medical meaning from them."
+        )
 
     priority_topics: list[str] = []
     if stance == "escalate_support":
@@ -205,6 +226,8 @@ def compute_coaching_synthesis(
             "recent_event_types_tail": [e.get("event_type") for e in recent[-8:] if isinstance(e, dict)],
             "symptom_severity_peak_in_window": symptom_peak,
             "medication_missed_7d": missed_7d,
+            "retention_streak_days": streak_days,
+            "retention_correlation_top": corr[0] if isinstance(corr, list) and corr else None,
         },
         "response_blueprint": blueprint,
     }

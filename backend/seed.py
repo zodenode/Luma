@@ -31,17 +31,36 @@ DEFAULT_RULES: list[dict] = [
             "actions": ["send_ai_message", "openloop_notify"],
         },
     },
+    {
+        "name": "Daily check-in → retention nudge",
+        "definition": {
+            "event_type": "daily_check_in",
+            "conditions": {},
+            "actions": ["send_ai_message"],
+        },
+    },
+    {
+        "name": "Weekly reflection → deepen engagement",
+        "definition": {
+            "event_type": "weekly_reflection",
+            "conditions": {},
+            "actions": ["send_ai_message", "schedule_checkin"],
+        },
+    },
 ]
 
 
 def seed_rules(db: Session) -> int:
-    existing = db.scalar(select(Rule).limit(1))
-    if existing:
-        return 0
+    existing_names = {row.name for row in db.scalars(select(Rule)).all()}
+    added = 0
     for r in DEFAULT_RULES:
+        if r["name"] in existing_names:
+            continue
         db.add(Rule(name=r["name"], definition=r["definition"], enabled=True))
-    db.commit()
-    return len(DEFAULT_RULES)
+        added += 1
+    if added:
+        db.commit()
+    return added
 
 
 def bootstrap() -> None:

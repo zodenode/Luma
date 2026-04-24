@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.core.models import Event, UserState
+from backend.core.retention import build_retention_snapshot
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -46,6 +47,9 @@ def refresh_user_state(db: Session, user_id: str) -> dict[str, Any]:
         "consult_completed",
         "lab_result_received",
         "prescription_schedule_set",
+        "daily_check_in",
+        "series_measurement",
+        "weekly_reflection",
     }
 
     prescription_schedule: dict[str, Any] | None = None
@@ -87,6 +91,8 @@ def refresh_user_state(db: Session, user_id: str) -> dict[str, Any]:
 
     adherence_score = max(0.0, min(1.0, 1.0 - (missed_30d / 30.0)))
 
+    retention = build_retention_snapshot(events, now)
+
     risk_level = "low"
     if missed_7d > 2 or symptom_severity_max >= 8:
         risk_level = "high"
@@ -105,6 +111,7 @@ def refresh_user_state(db: Session, user_id: str) -> dict[str, Any]:
             "medication_missed_count_30d": missed_30d,
             "symptom_severity_max_recent": symptom_severity_max,
         },
+        "retention": retention,
     }
 
     row = db.get(UserState, user_id)

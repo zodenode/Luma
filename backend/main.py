@@ -1,6 +1,9 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,7 +18,10 @@ from backend.services.care_pipeline import (
     ingest_symptom,
     process_chat_turn,
     record_consult_completed,
+    record_daily_check_in,
     record_medication_missed,
+    record_series_measurement,
+    record_weekly_reflection,
     set_prescription_schedule,
 )
 
@@ -27,6 +33,15 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Luma Care API", lifespan=lifespan)
+
+_static_dir = Path(__file__).resolve().parent / "static"
+if _static_dir.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+
+@app.get("/")
+def root() -> RedirectResponse:
+    return RedirectResponse(url="/static/retention.html")
 
 
 class ChatRequest(BaseModel):
@@ -58,6 +73,30 @@ class ConsultRequest(BaseModel):
 class PrescriptionScheduleRequest(BaseModel):
     user_id: str
     schedule: PrescriptionSchedulePayload
+
+
+class DailyCheckInRequest(BaseModel):
+    user_id: str
+    mood: int | None = Field(None, ge=1, le=5, description="Optional 1–5 mood")
+    note: str | None = None
+    date_local: str | None = Field(None, description="YYYY-MM-DD in user's local day if backfilling")
+
+
+class SeriesMeasurementRequest(BaseModel):
+    user_id: str
+    series_id: str = Field(..., description="Stable id e.g. weight_kg, bmi, out_of_pocket_usd")
+    value: float
+    unit: str | None = None
+    source: str | None = Field(None, description="e.g. patient_entered, pharmacy_estimate, import")
+    label: str | None = None
+
+
+class WeeklyReflectionRequest(BaseModel):
+    user_id: str
+    text: str
+    week_index: int | None = None
+    theme: str | None = None
+    tags: list[str] | None = None
 
 
 @app.post("/v1/chat", response_model=ChatResponse)
@@ -99,3 +138,23 @@ def user_state(external_user_id: str, db: Session = Depends(get_db)) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail="user_not_found")
     return get_state_view(db, row)
+
+
+@app.post("/v1/events/daily_check_in")
+def post_daily_check_in(req: DailyCheckInRequest, db: Session = Depends(get_db)) -> dict:
+    user = get_or_create_user(db, req.user_id)
+    return record_daily_check_in(db, user, req.mood, req.note, req.date_local)
+
+
+@app.post("/v1/events/series_measurement")
+def post_series_measurement(req: SeriesMeasurementRequest, db: Session = Depends(get_db)) -> dict:
+    user = get_or_create_user(db, req.user_id)
+    return record_series_measurement(
+        db, user, req.series_id, req.value, req.unit, req.source, req.label
+    )
+
+
+@app.post("/v1/events/weekly_reflection")
+def post_weekly_reflection(req: WeeklyReflectionRequest, db: Session = Depends(get_db)) -> dict:
+    user = get_or_create_user(db, req.user_id)
+    return record_weekly_reflection(db, user, req.text, req.week_index, req.theme, req.tags)
