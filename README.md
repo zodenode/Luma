@@ -1,3 +1,3 @@
 # Luma
 
-Care engine backend: see `backend/` and run `uvicorn backend.main:app`.
+Care engine backend. Run: `pip install -r requirements.txt` then `uvicorn backend.main:app --reload`.
