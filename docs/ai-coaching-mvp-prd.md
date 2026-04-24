@@ -59,6 +59,18 @@ AI provides:
 - Adherence support
 - Behavioral nudges
 
+### Step 4A — Chat resurrection on every return (critical)
+
+When a user re-opens the app, the system must rehydrate context before generating any response.
+
+`GET /chat/session` must load:
+
+- Recent messages (for example last 20)
+- Structured user state
+- Latest AI memory snapshot
+
+Result: conversation resumes naturally without reset behavior.
+
 ### Step 5 — Fulfillment and adherence loop
 
 Pharmacy events trigger:
@@ -93,6 +105,8 @@ A conversational interface that:
 - Generates structured guidance
 - Maintains continuity over time
 
+The chat coach is the interface layer over a longitudinal memory system. Continuity is a hard requirement, not a best effort.
+
 ### 3.2 Care status panel (secondary UI)
 
 Persistent sidebar showing:
@@ -101,6 +115,7 @@ Persistent sidebar showing:
 - Medication state (`not_started`, `active`, `shipped`)
 - Next recommended action
 - Adherence indicator
+- Last memory update timestamp
 
 ### 3.3 Care timeline (light history view)
 
@@ -122,6 +137,16 @@ Persistent actions:
 - Log medication
 - Ask AI question
 - Request help
+
+### 3.5 Conversation continuity layer (chat state rehydration)
+
+System must persist and rehydrate three memory artifacts:
+
+1. Raw message history (durable logs)
+2. Structured user state (compressed care state)
+3. AI-generated summary snapshot (retrieval seed with open threads)
+
+Without these three layers, the experience will reset and reduce retention.
 
 ---
 
@@ -174,6 +199,7 @@ The AI layer must:
 - Interpret incoming events in user context
 - Generate structured coaching responses
 - Maintain continuity across sessions
+- Resume unresolved coaching threads from memory snapshots
 
 Supported output types:
 
@@ -181,6 +207,12 @@ Supported output types:
 - Behavioral nudges
 - Clinical explanations (non-diagnostic)
 - Escalation flags
+
+Memory maintenance requirements:
+
+- Trigger summarization every 5-10 new messages (or equivalent token window)
+- Store open threads that should carry into future sessions
+- Update structured state fields when meaningful new user signals are detected
 
 Guardrails:
 
@@ -212,6 +244,8 @@ Guardrails:
 ### Conversation memory
 
 - Summaries of past AI interactions
+- Open threads requiring follow-up
+- Memory snapshot timestamp
 
 ---
 
@@ -255,3 +289,7 @@ Primary KPIs:
 ## 11) Product principle
 
 > Every clinical event must produce an AI-driven follow-up action inside the user experience.
+
+Memory principle:
+
+> Chat is the interface. Longitudinal care memory is the product.
