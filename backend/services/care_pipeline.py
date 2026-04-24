@@ -9,6 +9,7 @@ from backend.core.actions import run_actions
 from backend.core.events import CareEvent, ingest_event
 from backend.core.models import Event, User
 from backend.core.rules import evaluate_rules_for_event
+from backend.core.scheduling import PrescriptionSchedulePayload
 from backend.core.state import get_user_state_snapshot, refresh_user_state
 
 
@@ -73,10 +74,7 @@ def process_chat_turn(
     orch = run_actions(db, user.id, fired, ev_row.id)
     db.commit()
 
-    treatment_context = {
-        "active_treatment_status": user_state.get("active_treatment_status"),
-        "notes": "Populate from your EHR / product profile when available.",
-    }
+    treatment_context = _treatment_context_from_state(user_state)
 
     context = build_ai_context(
         user_state=user_state,
@@ -122,7 +120,7 @@ def ingest_symptom(
         user_state=user_state,
         recent_events=_recent_events(db, user.id),
         active_rules=fired,
-        treatment_context={"symptom": symptom},
+        treatment_context=_treatment_context_from_state(user_state, {"symptom": symptom}),
     )
     coach = generate_coaching_response(f"I am experiencing: {symptom}", ctx)
 
@@ -177,7 +175,7 @@ def record_consult_completed(db: Session, user: User, summary: str | None = None
         user_state=user_state,
         recent_events=_recent_events(db, user.id),
         active_rules=fired,
-        treatment_context={"consult": "completed"},
+        treatment_context=_treatment_context_from_state(user_state, {"consult": "completed"}),
     )
     coach = generate_coaching_response("I just finished my consult.", ctx)
 
@@ -192,3 +190,44 @@ def record_consult_completed(db: Session, user: User, summary: str | None = None
 
 def get_state_view(db: Session, user: User) -> dict[str, Any]:
     return get_user_state_snapshot(db, user.id)
+
+
+def _treatment_context_from_state(user_state: dict[str, Any], extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "active_treatment_status": user_state.get("active_treatment_status"),
+        "prescription_schedule": user_state.get("prescription_schedule"),
+        "notes": "Populate from your EHR / product profile when available.",
+    }
+    if extra:
+        out.update(extra)
+    return out
+
+
+def set_prescription_schedule(
+    db: Session,
+    user: User,
+    schedule: PrescriptionSchedulePayload,
+) -> dict[str, Any]:
+    """
+    Persist the full prescription schedule as an append-only event; state picks up latest.
+    """
+    ev = CareEvent(
+        event_type="prescription_schedule_set",
+        user_id=user.id,
+        payload=schedule.model_dump(mode="json"),
+    )
+    row = ingest_event(db, ev)
+    db.commit()
+    db.refresh(row)
+
+    user_state = refresh_user_state(db, user.id)
+    fired = evaluate_rules_for_event(db, user.id, ev.event_type, row.id)
+    orch = run_actions(db, user.id, fired, row.id)
+    db.commit()
+
+    return {
+        "event_id": row.id,
+        "user_state": user_state,
+        "fired_rules": fired,
+        "action_log_ids": [a.id for a in orch.action_logs],
+    }

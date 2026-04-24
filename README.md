@@ -28,6 +28,7 @@ backend/
     models.py             # users, events, user_state, rules, actions_log
     events/               # ingestion + CareEvent schema
     state/                # snapshot refresh from events
+    scheduling/           # prescription schedule JSON schema (Pydantic)
     rules/                # JSON rule evaluation (v1)
     actions/              # orchestrator + action logging
   integrations/         # OpenLoop, pharmacy, SMS, clinician stubs
@@ -44,9 +45,40 @@ tests/
 | POST | `/v1/events/symptom` | Symptom report |
 | POST | `/v1/events/medication_missed` | Adherence / missed dose |
 | POST | `/v1/events/consult_completed` | Consult completed |
+| POST | `/v1/events/prescription_schedule` | Set full Rx schedule (`prescription_schedule_set` → state) |
 | GET | `/v1/users/{external_user_id}/state` | Current materialised state snapshot |
 
 `user_id` in JSON bodies is the **external** id (`users.external_id`); internal UUID is created automatically.
+
+### Prescription schedule shape
+
+Post to `/v1/events/prescription_schedule` with a body like:
+
+```json
+{
+  "user_id": "alice",
+  "schedule": {
+    "version": 1,
+    "source": "patient_entered",
+    "medications": [
+      {
+        "medication_id": "rx_1001",
+        "display_name": "Metformin 500mg",
+        "timezone": "America/Chicago",
+        "instructions": "Take with meals",
+        "doses": [
+          { "time_local": "08:00", "days_of_week": null },
+          { "time_local": "18:00" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+- **`time_local`**: `HH:MM` in the medication’s **`timezone`** (IANA).
+- **`days_of_week`**: optional list `0–6` (Monday–Sunday, same as Python `weekday()`). Omit or `null` on a slot = every day.
+- Latest successful post wins: state snapshot field `prescription_schedule` mirrors the newest `prescription_schedule_set` event payload.
 
 ## Database schema
 

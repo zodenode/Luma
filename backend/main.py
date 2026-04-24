@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from backend.core.database import get_db
 from backend.core.models import User
 from backend.seed import bootstrap
+from backend.core.scheduling import PrescriptionSchedulePayload
 from backend.services.care_pipeline import (
     get_or_create_user,
     get_state_view,
@@ -15,6 +16,7 @@ from backend.services.care_pipeline import (
     process_chat_turn,
     record_consult_completed,
     record_medication_missed,
+    set_prescription_schedule,
 )
 
 
@@ -53,6 +55,11 @@ class ConsultRequest(BaseModel):
     summary: str | None = None
 
 
+class PrescriptionScheduleRequest(BaseModel):
+    user_id: str
+    schedule: PrescriptionSchedulePayload
+
+
 @app.post("/v1/chat", response_model=ChatResponse)
 def chat(req: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
     """Backward-compatible chat: same path shape; response includes optional trace."""
@@ -77,6 +84,13 @@ def post_medication_missed(req: MedicationMissedRequest, db: Session = Depends(g
 def post_consult(req: ConsultRequest, db: Session = Depends(get_db)) -> dict:
     user = get_or_create_user(db, req.user_id)
     return record_consult_completed(db, user, req.summary)
+
+
+@app.post("/v1/events/prescription_schedule")
+def post_prescription_schedule(req: PrescriptionScheduleRequest, db: Session = Depends(get_db)) -> dict:
+    """Append prescription_schedule_set; latest schedule is materialised into user_state."""
+    user = get_or_create_user(db, req.user_id)
+    return set_prescription_schedule(db, user, req.schedule)
 
 
 @app.get("/v1/users/{external_user_id}/state")

@@ -45,7 +45,10 @@ def refresh_user_state(db: Session, user_id: str) -> dict[str, Any]:
         "medication_missed",
         "consult_completed",
         "lab_result_received",
+        "prescription_schedule_set",
     }
+
+    prescription_schedule: dict[str, Any] | None = None
 
     for ev in events:
         ts = ev.timestamp
@@ -77,6 +80,11 @@ def refresh_user_state(db: Session, user_id: str) -> dict[str, Any]:
                 sev = int(ev.payload.get("severity") or 0)
             symptom_severity_max = max(symptom_severity_max, sev)
 
+        if ev.event_type == "prescription_schedule_set" and prescription_schedule is None:
+            prescription_schedule = (
+                ev.payload if isinstance(ev.payload, dict) else {"raw": ev.payload}
+            )
+
     adherence_score = max(0.0, min(1.0, 1.0 - (missed_30d / 30.0)))
 
     risk_level = "low"
@@ -91,6 +99,7 @@ def refresh_user_state(db: Session, user_id: str) -> dict[str, Any]:
         "active_treatment_status": active_treatment,
         "last_lab_summary": last_lab_summary,
         "last_interaction_timestamp": _iso(last_interaction),
+        "prescription_schedule": prescription_schedule,
         "metrics": {
             "medication_missed_count_7d": missed_7d,
             "medication_missed_count_30d": missed_30d,
