@@ -1,10 +1,18 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.core.models import Event, UserState
+from backend.core.state.retention import (
+    aggregate_clinical_series,
+    compute_checkin_streak,
+    correlation_hints,
+    latest_weekly_reflections,
+    retention_level,
+    retention_xp,
+)
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -46,9 +54,15 @@ def refresh_user_state(db: Session, user_id: str) -> dict[str, Any]:
         "consult_completed",
         "lab_result_received",
         "prescription_schedule_set",
+        "daily_checkin_completed",
+        "weekly_reflection_recorded",
+        "clinical_metric_recorded",
+        "external_sync_recorded",
     }
 
     prescription_schedule: dict[str, Any] | None = None
+    checkin_dates: set[date] = set()
+    cost_points: list[dict[str, Any]] = []
 
     for ev in events:
         ts = ev.timestamp
@@ -85,6 +99,35 @@ def refresh_user_state(db: Session, user_id: str) -> dict[str, Any]:
                 ev.payload if isinstance(ev.payload, dict) else {"raw": ev.payload}
             )
 
+        if ev.event_type == "daily_checkin_completed":
+            ts = ev.timestamp
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            checkin_dates.add(ts.astimezone(timezone.utc).date())
+
+        if ev.event_type == "external_sync_recorded":
+            p = ev.payload if isinstance(ev.payload, dict) else {}
+            rt = str(p.get("resource_type") or "").lower()
+            if rt in ("cost_estimate", "cost", "payment", "copay"):
+                ts = ev.timestamp
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                amt = p.get("amount_usd")
+                if amt is None and p.get("amount") is not None:
+                    try:
+                        amt = float(p["amount"])
+                    except (TypeError, ValueError):
+                        amt = None
+                cost_points.append(
+                    {
+                        "at": ts.isoformat(),
+                        "amount": amt,
+                        "currency": p.get("currency") or "USD",
+                        "platform": p.get("platform"),
+                        "label": p.get("label"),
+                    }
+                )
+
     adherence_score = max(0.0, min(1.0, 1.0 - (missed_30d / 30.0)))
 
     risk_level = "low"
@@ -92,6 +135,17 @@ def refresh_user_state(db: Session, user_id: str) -> dict[str, Any]:
         risk_level = "high"
     elif missed_7d > 0 or symptom_severity_max >= 4:
         risk_level = "medium"
+
+    today = datetime.now(timezone.utc).date()
+    streak = compute_checkin_streak(checkin_dates, today)
+    total_checkins = len(checkin_dates)
+    xp = retention_xp(total_checkins, streak)
+    level = retention_level(xp)
+
+    clinical_rollups = aggregate_clinical_series(events)
+    hints = correlation_hints(clinical_rollups)
+    reflections = latest_weekly_reflections(events, limit=5)
+    cost_timeline = sorted(cost_points, key=lambda x: x["at"])[-24:]
 
     snapshot: dict[str, Any] = {
         "adherence_score": round(adherence_score, 3),
@@ -105,6 +159,17 @@ def refresh_user_state(db: Session, user_id: str) -> dict[str, Any]:
             "medication_missed_count_30d": missed_30d,
             "symptom_severity_max_recent": symptom_severity_max,
         },
+        "retention": {
+            "checkin_streak_days": streak,
+            "distinct_checkin_days": total_checkins,
+            "retention_xp": xp,
+            "retention_level": level,
+            "last_checkin_date": max(checkin_dates).isoformat() if checkin_dates else None,
+        },
+        "clinical_series": clinical_rollups,
+        "correlation_hints": hints,
+        "weekly_reflections": reflections,
+        "cost_timeline": cost_timeline,
     }
 
     row = db.get(UserState, user_id)

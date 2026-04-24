@@ -67,6 +67,18 @@ def _event_themes(recent: list[dict[str, Any]], limit: int = 25) -> list[str]:
         elif et == "prescription_schedule_set" and "schedule_change" not in seen:
             themes.append("schedule_change")
             seen.add("schedule_change")
+        elif et == "daily_checkin_completed" and "retention_rhythm" not in seen:
+            themes.append("retention_rhythm")
+            seen.add("retention_rhythm")
+        elif et == "weekly_reflection_recorded" and "reflective_learning" not in seen:
+            themes.append("reflective_learning")
+            seen.add("reflective_learning")
+        elif et == "clinical_metric_recorded" and "longitudinal_metrics" not in seen:
+            themes.append("longitudinal_metrics")
+            seen.add("longitudinal_metrics")
+        elif et == "external_sync_recorded" and "external_context" not in seen:
+            themes.append("external_context")
+            seen.add("external_context")
     return list(reversed(themes))
 
 
@@ -104,12 +116,23 @@ def compute_coaching_synthesis(
     elif any(e.get("event_type") == "consult_completed" for e in recent[-8:]):
         stance = "onboard_integrate"
         rationale_parts.append("Recent consult; bridge clinical plan to daily behaviour.")
+    elif any(e.get("event_type") == "weekly_reflection_recorded" for e in recent[-8:]):
+        stance = "reflective_week"
+        rationale_parts.append(
+            "Weekly reflection logged; compare this week to prior reflections and metrics already on file."
+        )
     elif symptom_peak >= 4:
         stance = "symptom_stabilize"
         rationale_parts.append("Meaningful symptom intensity; validate and co-plan coping.")
 
     if not rationale_parts:
         rationale_parts.append("Risk and recent pattern support continuity and reinforcement.")
+
+    ret = state.get("retention") or {}
+    if isinstance(ret, dict) and int(ret.get("checkin_streak_days") or 0) >= 3:
+        rationale_parts.append("Sustained check-in streak; reinforce identity-based habits and next micro-goals.")
+    if isinstance(state.get("weekly_reflections"), list) and state["weekly_reflections"]:
+        rationale_parts.append("Weekly reflections on file; weave prior 'what changed' notes into continuity.")
 
     themes = _event_themes(recent)
 
@@ -138,6 +161,12 @@ def compute_coaching_synthesis(
         )
     if not recent:
         gaps.append("Sparse recent_events; lean on explicit user message and avoid inventing history.")
+    series = state.get("clinical_series") or {}
+    if not (isinstance(series, dict) and series):
+        gaps.append(
+            "No longitudinal clinical_metric_recorded series in state yet; "
+            "do not imply trends for BMI/weight/labs unless the user states them this turn."
+        )
 
     priority_topics: list[str] = []
     if stance == "escalate_support":
@@ -148,8 +177,17 @@ def compute_coaching_synthesis(
         priority_topics.extend(["care_plan_translation", "expectations", "first_week_goals"])
     elif stance == "symptom_stabilize":
         priority_topics.extend(["symptom_triggers", "self_monitoring", "when_to_escalate"])
+    elif stance == "reflective_week":
+        priority_topics.extend(["week_over_week_story", "barriers_and_wins", "metric_alignment"])
     else:
         priority_topics.extend(["sustain_habits", "motivation", "fine_tuning"])
+
+    if isinstance(ret, dict) and int(ret.get("checkin_streak_days") or 0) >= 1:
+        priority_topics.append("retention_rhythm")
+    if isinstance(state.get("weekly_reflections"), list) and state["weekly_reflections"]:
+        priority_topics.append("compare_to_prior_weeks")
+    if isinstance(state.get("correlation_hints"), list) and state["correlation_hints"]:
+        priority_topics.append("metric_continuity")
 
     rule_lines: list[str] = []
     for r in rules[:8]:
@@ -189,6 +227,10 @@ def compute_coaching_synthesis(
                 "What is one habit from last week you are quietly proud of?",
                 "Where do you want slightly more structure versus more flexibility?",
             ],
+            "reflective_week": [
+                "Compared to what you logged before, what felt different this week in your day-to-day routine?",
+                "If you had to name one lever (sleep, food timing, stress, cost, side effects) that moved the needle, which was it?",
+            ],
         },
     }
 
@@ -205,6 +247,8 @@ def compute_coaching_synthesis(
             "recent_event_types_tail": [e.get("event_type") for e in recent[-8:] if isinstance(e, dict)],
             "symptom_severity_peak_in_window": symptom_peak,
             "medication_missed_7d": missed_7d,
+            "retention_streak_days": int(ret.get("checkin_streak_days") or 0) if isinstance(ret, dict) else 0,
+            "retention_xp": int(ret.get("retention_xp") or 0) if isinstance(ret, dict) else 0,
         },
         "response_blueprint": blueprint,
     }

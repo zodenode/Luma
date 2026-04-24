@@ -11,6 +11,8 @@ You receive a structured context bundle:
 - active_rules: rules that fired on this turn (names + actions) — signals system escalation or follow-up
 - treatment_context: merge of treatment-specific fields for this interaction
 - coach_synthesis: derived meta-layer (stance, safety notes, information gaps, response blueprint)
+- user_state.retention / clinical_series / weekly_reflections / correlation_hints / cost_timeline:
+  gamified rhythm, longitudinal metrics, and external-platform context (e.g. cost estimates)
 
 Depth expectations:
 1. Reflect what the user actually said; connect it to 1–2 concrete signals from recent_events or user_state.
@@ -21,10 +23,13 @@ Depth expectations:
    - adherence_repair: curious, non-judgmental barrier exploration; problem-solve with the user
    - symptom_stabilize: validate distress; co-plan monitoring and coping; clear escalation guidance
    - onboard_integrate: translate clinical plan into daily life; clarify expectations and first steps
+   - reflective_week: week-over-week story; link logged reflections and metrics to one next experiment
    - escalate_support: urgent-compassionate; prioritise safety; favour clinician touchpoints over DIY fixes
 4. Use coach_synthesis.clinical_safety_notes and information_gaps literally: never fill gaps with invented
    clinical facts. If schedule or meds are unknown in context, ask focused questions instead of assuming.
 5. Use coach_synthesis.response_blueprint.sections as an outline for longer replies when appropriate.
+5b. When weekly_reflections or clinical_series are present, explicitly connect this turn to what was logged
+   before (continuity), without inventing values not in context.
 6. Prefer behavioural, achievable steps; avoid medical diagnosis or changing prescriptions unless the user
    is only repeating what their clinician already said in context.
 
@@ -185,6 +190,68 @@ def generate_coaching_response(
         sections.append(
             f"## Adherence snapshot\nAbout **{float(adherence):.0%}** on our simple model; "
             "we can deepen this once your schedule and dose events are logged more tightly."
+        )
+
+    ret = state.get("retention") or {}
+    if isinstance(ret, dict) and (ret.get("checkin_streak_days") is not None or ret.get("retention_xp")):
+        streak = ret.get("checkin_streak_days", "—")
+        xp = ret.get("retention_xp", "—")
+        lvl = ret.get("retention_level", "—")
+        last_d = ret.get("last_checkin_date") or "—"
+        sections.append(
+            "## Retention rhythm\n"
+            f"- Check-in streak: **{streak}** day(s)\n"
+            f"- Retention XP / level: **{xp}** / **{lvl}**\n"
+            f"- Last check-in date (UTC): **{last_d}**\n"
+            "_XP is a lightweight engagement signal, not a clinical score._"
+        )
+
+    series = state.get("clinical_series") or {}
+    if isinstance(series, dict) and series:
+        lines: list[str] = []
+        for key, r in list(series.items())[:8]:
+            if not isinstance(r, dict):
+                continue
+            last_v = r.get("last_value")
+            trend = r.get("trend")
+            n = r.get("n_points")
+            lines.append(f"- **{key}**: last **{last_v}**, trend **{trend}**, points logged **{n}**")
+        hints = state.get("correlation_hints") or []
+        hint_block = ""
+        if isinstance(hints, list) and hints:
+            hint_block = "\n**Continuity hints (from your logged series):**\n" + "\n".join(
+                f"- {h}" for h in hints[:4]
+            )
+        sections.append("## Longitudinal metrics\n" + "\n".join(lines) + hint_block)
+
+    refs = state.get("weekly_reflections") or []
+    if isinstance(refs, list) and refs:
+        ref_lines: list[str] = []
+        for r in refs[:3]:
+            if not isinstance(r, dict):
+                continue
+            wl = r.get("week_label") or ""
+            wc = (r.get("what_changed") or "")[:200]
+            ref_lines.append(f"- {wl}: what changed — {wc}" if wl else f"- What changed — {wc}")
+        sections.append(
+            "## What you said before (weekly)\n"
+            + "\n".join(ref_lines)
+            + "\n_I am anchoring to these notes so the conversation stays cumulative, not reset each week._"
+        )
+
+    costs = state.get("cost_timeline") or []
+    if isinstance(costs, list) and costs:
+        c_lines = []
+        for c in costs[-6:]:
+            if not isinstance(c, dict):
+                continue
+            amt = c.get("amount")
+            plat = c.get("platform") or "source"
+            c_lines.append(f"- **{amt}** {c.get('currency') or ''} @ {c.get('at', '')} ({plat})")
+        sections.append(
+            "## Cost signals synced in\n"
+            + "\n".join(c_lines)
+            + "\n_Use these as context for access stress or planning; do not treat as medical advice._"
         )
 
     if last_lab:

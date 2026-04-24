@@ -31,6 +31,23 @@ DEFAULT_RULES: list[dict] = [
             "actions": ["send_ai_message", "openloop_notify"],
         },
     },
+    {
+        "name": "Daily check-in streak → reinforcement",
+        "definition": {
+            "event_type": "daily_checkin_completed",
+            "count_event_type": "daily_checkin_completed",
+            "conditions": {"count_last_7_days": ">= 5"},
+            "actions": ["send_ai_message"],
+        },
+    },
+    {
+        "name": "Weekly reflection → coaching touchpoint",
+        "definition": {
+            "event_type": "weekly_reflection_recorded",
+            "conditions": {},
+            "actions": ["send_ai_message"],
+        },
+    },
 ]
 
 
