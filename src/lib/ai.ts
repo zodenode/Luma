@@ -1,74 +1,129 @@
 import OpenAI from "openai";
-import { getMemory, getTreatment, getUser } from "./store";
-import type { CareEvent, ChatMessage, TreatmentState, User } from "./types";
+import { z } from "zod";
+import { getLatestMemorySnapshot, getMemory, getTreatment, getUser } from "./store";
+import type { CareEvent, ChatMessage, StructuredCoachResponse, TreatmentState, User } from "./types";
 
 const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const hasKey = Boolean(process.env.OPENAI_API_KEY);
 
 const client = hasKey ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 
+const StructuredResponseSchema = z.object({
+  response_type: z.string(),
+  message: z.string(),
+  next_actions: z.array(z.string()).default([]),
+  adherence_risk: z.enum(["low", "medium", "high"]),
+  escalation_recommended: z.boolean(),
+  escalation_reason: z.string().nullable(),
+});
+
 export interface CoachReply {
   message: string;
   kind: "greeting" | "event_followup" | "chat" | "nudge" | "escalation";
   escalate?: boolean;
   escalationReason?: string;
+  structured?: StructuredCoachResponse;
 }
 
-const SYSTEM_PROMPT = `You are Luma, a warm, concise AI health coach.
-You sit on top of a real telehealth + pharmacy stack (OpenLoop + pharmacy partner).
-You interpret clinical events, explain treatment plans in plain language, and keep
-users engaged day-to-day.
+const SYSTEM_PROMPT = `You are the user's ongoing health coach for longitudinal care support.
+You are non-diagnostic and must not prescribe treatment changes.
+You maintain continuity across sessions by using provided USER_STATE, MEMORY_SNAPSHOT, and RECENT_MESSAGES.
+When the user returns, acknowledge prior context and continue open threads naturally.
+If risk signals appear, recommend escalation using configured policy.
+Tone: warm, concise, practical, supportive, and accountability-oriented.
 
-Ground rules:
-- You are NOT a clinician. Never diagnose, prescribe, or change dosing.
-- Keep messages short (2-5 sentences). Use one small, specific next action.
-- When a user reports red-flag symptoms (chest pain, suicidal ideation, severe
-  allergic reaction, pregnancy complications, severe mental health crisis),
-  acknowledge, urge them to contact a clinician or emergency services, and flag
-  for escalation.
-- Reference the user's goal, medication state, and recent events when helpful.
-- Never invent clinical facts. If you don't know, say so and suggest asking their clinician.`;
+You sit on top of telehealth + pharmacy (OpenLoop + pharmacy). Never invent clinical facts.
+Keep the visible coach message short (2-5 sentences) unless the user asks for detail.`;
 
 interface CoachContext {
   user: User;
   treatment?: TreatmentState;
   memorySummary?: string;
+  openThreads?: string[];
+  snapshotCreatedAt?: string;
 }
 
 async function loadContext(userId: string): Promise<CoachContext | null> {
   const user = await getUser(userId);
   if (!user) return null;
-  const [treatment, memory] = await Promise.all([
+  const [treatment, memory, snap] = await Promise.all([
     getTreatment(userId),
     getMemory(userId),
+    getLatestMemorySnapshot(userId),
   ]);
-  return { user, treatment, memorySummary: memory?.summary };
+  return {
+    user,
+    treatment,
+    memorySummary: memory?.summary || snap?.summary,
+    openThreads: memory?.open_threads?.length ? memory.open_threads : snap?.open_threads,
+    snapshotCreatedAt: snap?.created_at,
+  };
 }
 
-function renderContext(ctx: CoachContext): string {
-  const { user, treatment, memorySummary } = ctx;
+function renderUserState(ctx: CoachContext): string {
+  const { user, treatment } = ctx;
   const lines: string[] = [
-    `User: ${user.name} (goal: ${user.goal.replace("_", " ")})`,
+    `- goal: ${user.goal.replace("_", " ")}`,
+    `- treatment_stage: ${treatment?.stage ?? "intake"}`,
   ];
-  if (user.symptoms.length) lines.push(`Symptoms reported at intake: ${user.symptoms.join(", ")}`);
-  if (user.history) lines.push(`Relevant history: ${user.history}`);
-  if (treatment) {
-    lines.push(`Treatment stage: ${treatment.stage}`);
-    if (treatment.diagnosis) lines.push(`Diagnosis (from clinician): ${treatment.diagnosis}`);
-    if (treatment.plan_summary) lines.push(`Plan: ${treatment.plan_summary}`);
-    if (treatment.medication) {
-      const m = treatment.medication;
-      lines.push(
-        `Medication: ${m.name}${m.dosage ? ` ${m.dosage}` : ""} — state=${m.state}`,
-      );
-    }
-    if (typeof treatment.adherence_score === "number") {
-      lines.push(`Adherence score: ${(treatment.adherence_score * 100).toFixed(0)}%`);
-    }
-    if (treatment.risk_flags.length) lines.push(`Risk flags: ${treatment.risk_flags.join(", ")}`);
+  const med = treatment?.medication;
+  lines.push(
+    `- active_medication: ${med ? JSON.stringify({ name: med.name, dosage: med.dosage, state: med.state }) : "null"}`,
+  );
+  lines.push(`- adherence_score: ${treatment?.adherence_score ?? "null"}`);
+  lines.push(`- adherence_indicator: ${treatment?.adherence_indicator ?? "unknown"}`);
+  lines.push(`- key_symptoms: ${JSON.stringify(treatment?.key_symptoms ?? user.symptoms ?? [])}`);
+  lines.push(`- latest_lab_summary: ${treatment?.latest_lab_summary ?? "null"}`);
+  lines.push(`- last_interaction_at: ${treatment?.last_interaction_at ?? "null"}`);
+  if (user.symptoms.length) lines.push(`- intake_symptoms: ${user.symptoms.join(", ")}`);
+  if (user.history) lines.push(`- relevant_history: ${user.history}`);
+  if (treatment?.diagnosis) lines.push(`- diagnosis_from_clinician: ${treatment.diagnosis}`);
+  if (treatment?.plan_summary) lines.push(`- plan_summary: ${treatment.plan_summary}`);
+  if (treatment?.next_recommended_action) {
+    lines.push(`- next_recommended_action: ${treatment.next_recommended_action}`);
   }
-  if (memorySummary) lines.push(`Prior conversation summary: ${memorySummary}`);
   return lines.join("\n");
+}
+
+function renderMemoryBlock(ctx: CoachContext): string {
+  return [
+    `- summary: ${ctx.memorySummary ?? ""}`,
+    `- open_threads: ${JSON.stringify(ctx.openThreads ?? [])}`,
+    `- snapshot_created_at: ${ctx.snapshotCreatedAt ?? "null"}`,
+  ].join("\n");
+}
+
+function renderRecentMessages(history: ChatMessage[]): string {
+  return history
+    .slice(-20)
+    .map((m) => `${m.role}: ${m.content}`)
+    .join("\n");
+}
+
+function buildContextPacket(args: {
+  ctx: CoachContext;
+  history: ChatMessage[];
+  resumedSession: boolean;
+  extra?: string;
+}): string {
+  const { ctx, history, resumedSession, extra } = args;
+  return [
+    resumedSession
+      ? "SESSION: resumed (user reopened app). Start with a brief continuity signal."
+      : "SESSION: active",
+    "",
+    "USER_STATE:",
+    renderUserState(ctx),
+    "",
+    "MEMORY_SNAPSHOT:",
+    renderMemoryBlock(ctx),
+    "",
+    "RECENT_MESSAGES (last 20):",
+    renderRecentMessages(history),
+    extra ? `\n${extra}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function detectRedFlags(text: string): string | null {
@@ -86,6 +141,29 @@ function detectRedFlags(text: string): string | null {
   return null;
 }
 
+function parseStructuredJson(text: string): StructuredCoachResponse | null {
+  const trimmed = text.trim();
+  const jsonBlock = trimmed.match(/\{[\s\S]*\}/);
+  const raw = jsonBlock ? jsonBlock[0] : trimmed;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return StructuredResponseSchema.parse(parsed) as StructuredCoachResponse;
+  } catch {
+    return null;
+  }
+}
+
+function defaultStructured(message: string, responseType: string): StructuredCoachResponse {
+  return {
+    response_type: responseType,
+    message,
+    next_actions: [],
+    adherence_risk: "low",
+    escalation_recommended: false,
+    escalation_reason: null,
+  };
+}
+
 // --- Event follow-ups --------------------------------------------------------
 
 export async function generateEventFollowup(event: CareEvent): Promise<CoachReply | null> {
@@ -94,35 +172,49 @@ export async function generateEventFollowup(event: CareEvent): Promise<CoachRepl
 
   const kind = event.type === "escalation_triggered" ? "escalation" : "event_followup";
 
-  if (!client) return { message: mockEventFollowup(event, ctx), kind };
+  if (!client) {
+    const message = mockEventFollowup(event, ctx);
+    return { message, kind, structured: defaultStructured(message, "event_followup") };
+  }
 
-  const userPrompt = `A new clinical/system event just arrived for this user.
-Write a short, warm coach message (2-4 sentences) that:
-1. Acknowledges the event in plain language.
-2. Explains what it means for them, tied to their goal.
-3. Gives ONE specific next action they can take in the app today.
+  const userPrompt = `A new clinical/system event arrived. Respond with a single JSON object ONLY (no markdown) matching this schema:
+{"response_type":"string","message":"string","next_actions":["string"],"adherence_risk":"low|medium|high","escalation_recommended":boolean,"escalation_reason":string|null}
+
+Rules for message: 2-4 sentences, warm, plain language, one concrete next action implied in next_actions.
 
 Event:
 ${JSON.stringify({ type: event.type, payload: event.payload }, null, 2)}
 
-User context:
-${renderContext(ctx)}`;
+Context:
+${buildContextPacket({ ctx, history: [], resumedSession: false })}`;
 
   try {
     const res = await client.chat.completions.create({
       model: MODEL,
       temperature: 0.5,
+      response_format: { type: "json_object" },
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: userPrompt },
       ],
     });
-    const message = res.choices[0]?.message?.content?.trim();
-    if (!message) return { message: mockEventFollowup(event, ctx), kind };
-    return { message, kind };
+    const raw = res.choices[0]?.message?.content?.trim();
+    const structured = raw ? parseStructuredJson(raw) : null;
+    if (structured) {
+      return {
+        message: structured.message,
+        kind,
+        structured,
+        escalate: structured.escalation_recommended,
+        escalationReason: structured.escalation_reason ?? undefined,
+      };
+    }
+    const message = mockEventFollowup(event, ctx);
+    return { message, kind, structured: defaultStructured(message, "event_followup") };
   } catch (err) {
     console.warn("[ai] event followup fallback:", err);
-    return { message: mockEventFollowup(event, ctx), kind };
+    const message = mockEventFollowup(event, ctx);
+    return { message, kind, structured: defaultStructured(message, "event_followup") };
   }
 }
 
@@ -131,53 +223,79 @@ ${renderContext(ctx)}`;
 export async function generateChatReply(args: {
   userId: string;
   history: ChatMessage[];
+  resumedSession: boolean;
 }): Promise<CoachReply> {
   const ctx = await loadContext(args.userId);
   if (!ctx) {
-    return { message: "I can't find your profile. Please complete intake first.", kind: "chat" };
+    const message = "I can't find your profile. Please complete intake first.";
+    return { message, kind: "chat", structured: defaultStructured(message, "error") };
   }
 
   const latestUser = [...args.history].reverse().find((m) => m.role === "user");
   const escalationReason = latestUser ? detectRedFlags(latestUser.content) : null;
 
   if (!client) {
-    const reply = mockChatReply(args.history, ctx);
+    const reply = mockChatReply(args.history, ctx, args.resumedSession);
+    const structured = defaultStructured(reply, "chat");
     return {
       message: reply,
       kind: "chat",
+      structured,
       escalate: Boolean(escalationReason),
       escalationReason: escalationReason ?? undefined,
     };
   }
 
-  const contextMsg = renderContext(ctx);
   const trimmed = args.history.slice(-16);
+  const userPrompt = `The user sent a chat message. Output a single JSON object ONLY (no markdown) with schema:
+{"response_type":"string","message":"string","next_actions":["string"],"adherence_risk":"low|medium|high","escalation_recommended":boolean,"escalation_reason":string|null}
+
+Advance one open thread (if any) plus one concrete next action in next_actions.
+${args.resumedSession ? "Begin message with a short continuity signal (e.g. Good to see you back)." : ""}
+
+Context:
+${buildContextPacket({ ctx, history: args.history, resumedSession: args.resumedSession })}`;
 
   try {
     const res = await client.chat.completions.create({
       model: MODEL,
       temperature: 0.6,
+      response_format: { type: "json_object" },
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
-        { role: "system", content: `Current user context:\n${contextMsg}` },
+        { role: "user", content: userPrompt },
         ...trimmed.map((m) => ({
           role: m.role === "assistant" ? "assistant" : m.role === "system" ? "system" : "user",
           content: m.content,
         })) as { role: "user" | "assistant" | "system"; content: string }[],
       ],
     });
-    const message = res.choices[0]?.message?.content?.trim() || "I'm here. Tell me more about how you're feeling today.";
+    const raw = res.choices[0]?.message?.content?.trim();
+    const structured = raw ? parseStructuredJson(raw) : null;
+    if (structured) {
+      return {
+        message: structured.message,
+        kind: "chat",
+        structured,
+        escalate: Boolean(escalationReason) || structured.escalation_recommended,
+        escalationReason: escalationReason ?? structured.escalation_reason ?? undefined,
+      };
+    }
+    const reply = mockChatReply(args.history, ctx, args.resumedSession);
     return {
-      message,
+      message: reply,
       kind: "chat",
+      structured: defaultStructured(reply, "chat"),
       escalate: Boolean(escalationReason),
       escalationReason: escalationReason ?? undefined,
     };
   } catch (err) {
     console.warn("[ai] chat reply fallback:", err);
+    const reply = mockChatReply(args.history, ctx, args.resumedSession);
     return {
-      message: mockChatReply(args.history, ctx),
+      message: reply,
       kind: "chat",
+      structured: defaultStructured(reply, "chat"),
       escalate: Boolean(escalationReason),
       escalationReason: escalationReason ?? undefined,
     };
@@ -214,6 +332,19 @@ export async function summarizeConversation(messages: ChatMessage[]): Promise<st
   }
 }
 
+export function extractOpenThreads(summary: string, messages: ChatMessage[]): string[] {
+  const fromSummary = summary
+    .split("\n")
+    .map((l) => l.replace(/^[-•*]\s*/, "").trim())
+    .filter((l) => l.length > 4)
+    .slice(0, 5);
+  const lastUser = [...messages].reverse().find((m) => m.role === "user");
+  if (lastUser && lastUser.content.length < 200) {
+    return Array.from(new Set([`Follow up on: ${lastUser.content.slice(0, 120)}`, ...fromSummary])).slice(0, 6);
+  }
+  return fromSummary;
+}
+
 // --- Mock fallbacks ---------------------------------------------------------
 
 function mockEventFollowup(event: CareEvent, ctx: CoachContext): string {
@@ -237,6 +368,8 @@ function mockEventFollowup(event: CareEvent, ctx: CoachContext): string {
       return `Heads up: your refill is due. Confirm it in one tap and you won't lose momentum on your ${ctx.user.goal.replace("_", " ")} goal.`;
     case "symptom_reported":
       return `Thanks for flagging that. I've logged it on your timeline. If it gets worse or you're worried, I can loop in a clinician — just say the word.`;
+    case "request_help":
+      return `I've routed your request to the care team. They'll follow up soon — I'm still here if you want to talk through anything in the meantime.`;
     case "escalation_triggered":
       return `I've flagged this for a human clinician to review. They'll reach out soon. In the meantime I'm still here — no pressure to explain more unless you want to.`;
     default:
@@ -244,9 +377,12 @@ function mockEventFollowup(event: CareEvent, ctx: CoachContext): string {
   }
 }
 
-function mockChatReply(history: ChatMessage[], ctx: CoachContext): string {
+function mockChatReply(history: ChatMessage[], ctx: CoachContext, resumed: boolean): string {
   const last = [...history].reverse().find((m) => m.role === "user");
   const name = ctx.user.name.split(" ")[0];
+  if (resumed) {
+    return `Good to see you back, ${name}. ${ctx.treatment?.next_recommended_action ? `Next up: ${ctx.treatment.next_recommended_action}` : "How are you feeling today?"}`;
+  }
   if (!last) return `Hey ${name} — how are you feeling today?`;
   const text = last.content.toLowerCase();
   if (/plan|treatment/.test(text)) {

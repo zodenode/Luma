@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { CareEvent, ChatMessage, TreatmentState, User } from "@/lib/types";
+import type { CareEvent, ChatMessage, ConversationMemory, TreatmentState, User } from "@/lib/types";
+import CareContextCard from "./CareContextCard";
 import CareStatusPanel from "./CareStatusPanel";
 import CareTimeline from "./CareTimeline";
 import QuickActionsBar from "./QuickActionsBar";
@@ -25,6 +26,7 @@ export default function CareLoop({
   const [treatment, setTreatment] = useState<TreatmentState | undefined>(initialTreatment);
   const [events, setEvents] = useState<CareEvent[]>(initialEvents);
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
+  const [memory, setMemory] = useState<ConversationMemory | undefined>();
   const [busy, setBusy] = useState(false);
   const pollRef = useRef<number | null>(null);
 
@@ -35,7 +37,20 @@ export default function CareLoop({
     setTreatment(data.treatment);
     setEvents(data.events ?? []);
     setMessages(data.messages ?? []);
+    setMemory(data.memory);
   }, [user.id]);
+
+  useEffect(() => {
+    void (async () => {
+      const res = await fetch("/api/v1/chat/session/open", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ userId: user.id }),
+      });
+      if (!res.ok) return;
+      await refresh();
+    })();
+  }, [user.id, refresh]);
 
   useEffect(() => {
     // Light polling so webhook-driven events show up when triggered elsewhere.
@@ -57,7 +72,7 @@ export default function CareLoop({
     };
     setMessages((prev) => [...prev, optimistic]);
     try {
-      const res = await fetch("/api/chat", {
+      const res = await fetch("/api/v1/chat/message", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ userId: user.id, content }),
@@ -74,7 +89,8 @@ export default function CareLoop({
   async function runAction(body: Record<string, unknown>) {
     setBusy(true);
     try {
-      const res = await fetch("/api/actions", {
+      const path = mapActionToV1(body);
+      const res = await fetch(path, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -124,6 +140,11 @@ export default function CareLoop({
       <div className="flex-1 mx-auto max-w-7xl w-full px-5 py-6 grid grid-cols-12 gap-6">
         <aside className="col-span-12 lg:col-span-3 space-y-6">
           <CareStatusPanel user={user} treatment={treatment} />
+          <CareContextCard
+            user={user}
+            treatment={treatment}
+            memoryUpdatedAt={memory?.updated_at}
+          />
           <CareTimeline events={events} />
         </aside>
 
@@ -147,6 +168,14 @@ export default function CareLoop({
       </div>
     </div>
   );
+}
+
+function mapActionToV1(body: Record<string, unknown>): string {
+  const action = body.action as string | undefined;
+  if (action === "log_medication") return "/api/v1/actions/log-medication";
+  if (action === "checkin_symptom") return "/api/v1/actions/checkin";
+  if (action === "request_help") return "/api/v1/actions/request-help";
+  return "/api/v1/actions/checkin";
 }
 
 function ChatComposer({

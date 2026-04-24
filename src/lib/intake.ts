@@ -11,6 +11,7 @@ export interface IntakeInput {
 }
 
 export async function createIntake(input: IntakeInput): Promise<User> {
+  const now = new Date().toISOString();
   const user: User = {
     id: newId("usr"),
     name: input.name.trim(),
@@ -18,7 +19,8 @@ export async function createIntake(input: IntakeInput): Promise<User> {
     symptoms: input.symptoms.map((s) => s.trim()).filter(Boolean),
     history: input.history.trim(),
     linked_openloop_id: `ol_${newId().slice(0, 8)}`,
-    created_at: new Date().toISOString(),
+    created_at: now,
+    updated_at: now,
   };
 
   await mutate(async (db) => {
@@ -30,6 +32,7 @@ export async function createIntake(input: IntakeInput): Promise<User> {
     type: "intake_completed",
     source: "user",
     payload: { goal: user.goal, symptoms: user.symptoms },
+    idempotency_key: `intake_completed:${user.id}`,
   });
 
   return user;

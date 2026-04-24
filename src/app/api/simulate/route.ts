@@ -50,6 +50,7 @@ export async function POST(req: Request) {
     type: eventType,
     source: source as "openloop" | "pharmacy",
     payload,
+    idempotency_key: `simulate:${parsed.data.userId}:${eventType}:${Date.now()}`,
   });
 
   return NextResponse.json({ event });

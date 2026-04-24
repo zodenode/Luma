@@ -56,9 +56,10 @@ export async function POST(req: Request) {
     case "request_help": {
       const event = await ingestEvent({
         userId: parsed.data.userId,
-        type: "escalation_triggered",
+        type: "request_help",
         source: "user",
         payload: { reason: parsed.data.reason ?? "User requested help" },
+        idempotency_key: `request_help:legacy:${parsed.data.userId}:${Date.now()}`,
       });
       return NextResponse.json({ event });
     }

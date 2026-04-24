@@ -29,11 +29,16 @@ export async function POST(req: Request) {
   });
   if (!user) return notFound("user_not_found");
 
+  const idem =
+    req.headers.get("idempotency-key")?.trim() ||
+    `openloop:legacy:${parsed.data.event}:${user.id}:${JSON.stringify(parsed.data.data).slice(0, 80)}`;
+
   const event = await ingestEvent({
     userId: user.id,
     type: parsed.data.event,
     source: "openloop",
     payload: parsed.data.data,
+    idempotency_key: idem,
   });
 
   return NextResponse.json({ ok: true, event_id: event.id });

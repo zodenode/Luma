@@ -13,6 +13,9 @@ const EVENT_LABEL: Record<EventType, string> = {
   adherence_missed: "Dose missed",
   adherence_confirmed: "Dose logged",
   refill_due: "Refill due",
+  request_help: "Help requested",
+  ai_response_generated: "Coach update",
+  escalation_created: "Escalation queued",
   escalation_triggered: "Escalation",
   ai_followup: "AI follow-up",
 };
@@ -29,12 +32,17 @@ const DOT: Record<EventType, string> = {
   adherence_missed: "bg-luma-warn",
   adherence_confirmed: "bg-luma-accent",
   refill_due: "bg-luma-warn",
+  request_help: "bg-luma-danger",
+  ai_response_generated: "bg-luma-muted",
+  escalation_created: "bg-luma-warn",
   escalation_triggered: "bg-luma-danger",
   ai_followup: "bg-luma-muted",
 };
 
+const HIDE_TYPES = new Set<EventType>(["user_checkin", "ai_response_generated"]);
+
 export default function CareTimeline({ events }: { events: CareEvent[] }) {
-  const visible = events.filter((e) => e.type !== "user_checkin").slice(0, 12);
+  const visible = events.filter((e) => !HIDE_TYPES.has(e.type)).slice(0, 12);
 
   return (
     <div className="card p-4">
@@ -53,7 +61,7 @@ export default function CareTimeline({ events }: { events: CareEvent[] }) {
               />
               <div className="text-sm">{EVENT_LABEL[e.type]}</div>
               <div className="text-[11px] text-luma-muted">
-                {formatTime(e.timestamp)} · {e.source}
+                {formatTime(e.occurred_at)} · {e.source}
               </div>
             </li>
           ))}

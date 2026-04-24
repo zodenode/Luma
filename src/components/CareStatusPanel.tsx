@@ -64,6 +64,9 @@ export default function CareStatusPanel({
           }
         />
         <Row label="State" value={med ? MED_LABEL[med.state] ?? med.state : "—"} />
+        {treatment?.adherence_indicator && treatment.adherence_indicator !== "unknown" && (
+          <Row label="Adherence signal" value={treatment.adherence_indicator.replace(/_/g, " ")} />
+        )}
         {adherencePct != null && (
           <div>
             <div className="text-xs text-luma-muted mb-1">Adherence</div>
