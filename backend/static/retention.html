@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Luma — Retention</title>
+  <link rel="stylesheet" href="/static/retention.css" />
+</head>
+<body>
+  <header class="top">
+    <div>
+      <h1>Retention</h1>
+      <p class="sub">Daily rhythm, weekly story, and longitudinal metrics materialised in <code>user_state.retention</code>.</p>
+    </div>
+    <label class="uid">
+      External user id
+      <input type="text" id="userId" value="demo_user" autocomplete="username" />
+    </label>
+  </header>
+
+  <main class="grid">
+    <section class="card" id="snapshot-card">
+      <h2>Live snapshot</h2>
+      <button type="button" id="refreshState">Refresh from API</button>
+      <pre id="stateOut" class="out" aria-live="polite">{}</pre>
+    </section>
+
+    <section class="card viz">
+      <h2>Streak &amp; level</h2>
+      <div class="stats">
+        <div><span class="label">Check-in streak</span><strong id="streak">—</strong></div>
+        <div><span class="label">Level / points</span><strong id="level">—</strong></div>
+        <div><span class="label">Program week (est.)</span><strong id="week">—</strong></div>
+      </div>
+      <div class="badges" id="badges"></div>
+    </section>
+
+    <section class="card">
+      <h2>Daily check-in</h2>
+      <form id="formDaily">
+        <label>Mood (1–5) <input name="mood" type="number" min="1" max="5" /></label>
+        <label>Energy (1–5) <input name="energy" type="number" min="1" max="5" /></label>
+        <label>Note <textarea name="note" rows="2"></textarea></label>
+        <button type="submit">POST /v1/events/daily_checkin</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Weekly reflection</h2>
+      <form id="formWeekly">
+        <label>What did you do differently this week?
+          <textarea name="what_changed" rows="3" required></textarea>
+        </label>
+        <label>Challenges <textarea name="challenges" rows="2"></textarea></label>
+        <label>Week # (optional) <input name="week_number" type="number" min="1" /></label>
+        <button type="submit">POST /v1/events/weekly_reflection</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Metric (e.g. BMI, weight)</h2>
+      <form id="formMetric">
+        <label>metric_id <input name="metric_id" value="bmi" required /></label>
+        <label>value <input name="value" type="text" required /></label>
+        <label>unit <input name="unit" placeholder="kg / none" /></label>
+        <label>source <input name="source" placeholder="patient_entered / platform_x" /></label>
+        <button type="submit">POST /v1/events/metric</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Cost / access (today)</h2>
+      <form id="formCost">
+        <label>amount_today <input name="amount_today" type="number" step="0.01" /></label>
+        <label>currency <input name="currency" value="USD" /></label>
+        <label>reason <textarea name="reason" rows="2"></textarea></label>
+        <button type="submit">POST /v1/events/cost_barrier</button>
+      </form>
+    </section>
+
+    <section class="card wide">
+      <h2>Series (last points per metric)</h2>
+      <canvas id="seriesChart" width="720" height="220" aria-label="Metric series chart"></canvas>
+      <p class="hint">Chart uses numeric <code>metric_recorded</code> values only; strings are listed in the JSON snapshot.</p>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <a href="/docs">OpenAPI docs</a>
+    · Same data as <code>GET /v1/users/{external_user_id}/state</code>
+  </footer>
+
+  <script src="/static/retention.js"></script>
+</body>
+</html>

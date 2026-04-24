@@ -84,9 +84,8 @@ def _format_gaps(synthesis: dict[str, Any]) -> str:
 def _depth_questions(synthesis: dict[str, Any]) -> list[str]:
     stance = str(synthesis.get("coaching_stance") or "maintain_momentum")
     bp = synthesis.get("response_blueprint") or {}
-    prompts = (bp.get("depth_probe_prompts_by_stance") or {}).get(stance) or (
-        bp.get("depth_probe_prompts_by_stance") or {}
-    ).get("maintain_momentum", [])
+    by_stance = bp.get("depth_probe_prompts_by_stance") or {}
+    prompts = by_stance.get(stance) or by_stance.get("maintain_momentum", [])
     return list(prompts)[:2]
 
 
@@ -167,6 +166,50 @@ def generate_coaching_response(
             )
         sched_block = "## Your schedule on file\n" + "\n".join(med_lines)
         sections.append(sched_block)
+
+    retention = state.get("retention") if isinstance(state.get("retention"), dict) else None
+    if retention:
+        dc = retention.get("daily_checkin") or {}
+        gm = retention.get("gamification") or {}
+        prog = retention.get("program") or {}
+        longi = retention.get("longitudinal") or {}
+        streak = dc.get("streak_current", "—") if isinstance(dc, dict) else "—"
+        level = gm.get("level", "—") if isinstance(gm, dict) else "—"
+        pts = gm.get("engagement_points", "—") if isinstance(gm, dict) else "—"
+        badges = gm.get("badges") or [] if isinstance(gm, dict) else []
+        week_n = prog.get("week_number_estimated") if isinstance(prog, dict) else None
+        hints = longi.get("correlation_hints") or [] if isinstance(longi, dict) else []
+        wmem = longi.get("weekly_reflection_memory") or [] if isinstance(longi, dict) else []
+        hint_lines = []
+        for h in hints[:4]:
+            if isinstance(h, dict):
+                hint_lines.append(str(h.get("label") or h.get("note") or h))
+        mem_lines = []
+        for w in wmem[-3:]:
+            if isinstance(w, dict):
+                wc = (w.get("what_changed") or "")[:180]
+                mem_lines.append(f"- Week {w.get('week_number', '?')}: {wc}" if wc else f"- Week {w.get('week_number', '?')}")
+        sections.append(
+            "## Retention loop\n"
+            f"- Estimated program week: **{week_n if week_n is not None else '—'}**\n"
+            f"- Daily check-in streak: **{streak}**\n"
+            f"- Engagement level / points: **{level}** / **{pts}**\n"
+            + (f"- Badges: {', '.join(str(b) for b in badges)}\n" if badges else "")
+            + (
+                "## Your week-over-week thread\n" + "\n".join(mem_lines) + "\n"
+                if mem_lines
+                else ""
+            )
+            + (
+                "## Trajectory hints (user-logged; not clinical interpretation)\n"
+                + "\n".join(f"- {line}" for line in hint_lines)
+                + "\n"
+                if hint_lines
+                else ""
+            )
+            + "Use this block to reinforce continuity: celebrate streaks lightly, "
+            "invite the next small log or reflection, and connect behaviours to trends only as hypotheses."
+        )
 
     metrics = state.get("metrics") or {}
     if isinstance(metrics, dict) and metrics:

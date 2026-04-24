@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.core.models import Event, UserState
+from backend.core.retention import build_retention_profile
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -46,9 +47,14 @@ def refresh_user_state(db: Session, user_id: str) -> dict[str, Any]:
         "consult_completed",
         "lab_result_received",
         "prescription_schedule_set",
+        "daily_checkin_completed",
+        "weekly_reflection_submitted",
+        "metric_recorded",
+        "cost_barrier_noted",
     }
 
     prescription_schedule: dict[str, Any] | None = None
+    retention_event_dicts: list[dict[str, Any]] = []
 
     for ev in events:
         ts = ev.timestamp
@@ -85,6 +91,17 @@ def refresh_user_state(db: Session, user_id: str) -> dict[str, Any]:
                 ev.payload if isinstance(ev.payload, dict) else {"raw": ev.payload}
             )
 
+        ts_raw = ev.timestamp
+        if ts_raw.tzinfo is None:
+            ts_raw = ts_raw.replace(tzinfo=timezone.utc)
+        retention_event_dicts.append(
+            {
+                "event_type": ev.event_type,
+                "timestamp": ts_raw,
+                "payload": ev.payload if isinstance(ev.payload, dict) else {},
+            }
+        )
+
     adherence_score = max(0.0, min(1.0, 1.0 - (missed_30d / 30.0)))
 
     risk_level = "low"
@@ -93,6 +110,8 @@ def refresh_user_state(db: Session, user_id: str) -> dict[str, Any]:
     elif missed_7d > 0 or symptom_severity_max >= 4:
         risk_level = "medium"
 
+    retention_profile = build_retention_profile(retention_event_dicts, now=now)
+
     snapshot: dict[str, Any] = {
         "adherence_score": round(adherence_score, 3),
         "risk_level": risk_level,
@@ -100,6 +119,7 @@ def refresh_user_state(db: Session, user_id: str) -> dict[str, Any]:
         "last_lab_summary": last_lab_summary,
         "last_interaction_timestamp": _iso(last_interaction),
         "prescription_schedule": prescription_schedule,
+        "retention": retention_profile,
         "metrics": {
             "medication_missed_count_7d": missed_7d,
             "medication_missed_count_30d": missed_30d,

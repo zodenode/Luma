@@ -31,6 +31,30 @@ DEFAULT_RULES: list[dict] = [
             "actions": ["send_ai_message", "openloop_notify"],
         },
     },
+    {
+        "name": "Daily check-in → retention touchpoint",
+        "definition": {
+            "event_type": "daily_checkin_completed",
+            "conditions": {},
+            "actions": ["send_ai_message"],
+        },
+    },
+    {
+        "name": "Weekly reflection → deepen continuity",
+        "definition": {
+            "event_type": "weekly_reflection_submitted",
+            "conditions": {},
+            "actions": ["send_ai_message", "schedule_checkin"],
+        },
+    },
+    {
+        "name": "Cost barrier noted → support + navigation",
+        "definition": {
+            "event_type": "cost_barrier_noted",
+            "conditions": {},
+            "actions": ["send_ai_message", "notify_clinician"],
+        },
+    },
 ]
 
 

@@ -1,14 +1,6 @@
-import pytest
 from fastapi.testclient import TestClient
 
 # DATABASE_URL is set in conftest before backend imports.
-from backend.main import app
-
-
-@pytest.fixture()
-def client():
-    with TestClient(app) as c:
-        yield c
 
 
 def test_chat_creates_event_and_returns_reply(client: TestClient):

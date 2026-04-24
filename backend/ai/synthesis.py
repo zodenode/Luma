@@ -67,6 +67,18 @@ def _event_themes(recent: list[dict[str, Any]], limit: int = 25) -> list[str]:
         elif et == "prescription_schedule_set" and "schedule_change" not in seen:
             themes.append("schedule_change")
             seen.add("schedule_change")
+        elif et == "daily_checkin_completed" and "retention_rhythm" not in seen:
+            themes.append("retention_rhythm")
+            seen.add("retention_rhythm")
+        elif et == "weekly_reflection_submitted" and "longitudinal_story" not in seen:
+            themes.append("longitudinal_story")
+            seen.add("longitudinal_story")
+        elif et == "metric_recorded" and "self_tracking" not in seen:
+            themes.append("self_tracking")
+            seen.add("self_tracking")
+        elif et == "cost_barrier_noted" and "access_stress" not in seen:
+            themes.append("access_stress")
+            seen.add("access_stress")
     return list(reversed(themes))
 
 
@@ -88,6 +100,7 @@ def compute_coaching_synthesis(
 
     missed_7d = int(metrics.get("medication_missed_count_7d") or 0)
     symptom_peak = _recent_symptom_peak(recent)
+    retention = state.get("retention") if isinstance(state.get("retention"), dict) else {}
     sched = state.get("prescription_schedule") or treatment.get("prescription_schedule")
     sched_brief = _schedule_brief(sched if isinstance(sched, dict) else None)
 
@@ -107,6 +120,9 @@ def compute_coaching_synthesis(
     elif symptom_peak >= 4:
         stance = "symptom_stabilize"
         rationale_parts.append("Meaningful symptom intensity; validate and co-plan coping.")
+    elif any(e.get("event_type") == "cost_barrier_noted" for e in recent[-6:]):
+        stance = "adherence_repair"
+        rationale_parts.append("Recent cost or access stress; explore barriers and practical navigation.")
 
     if not rationale_parts:
         rationale_parts.append("Risk and recent pattern support continuity and reinforcement.")
@@ -139,6 +155,19 @@ def compute_coaching_synthesis(
     if not recent:
         gaps.append("Sparse recent_events; lean on explicit user message and avoid inventing history.")
 
+    streak = 0
+    if retention:
+        dc = retention.get("daily_checkin") or {}
+        if isinstance(dc, dict):
+            try:
+                streak = int(dc.get("streak_current") or 0)
+            except (TypeError, ValueError):
+                streak = 0
+        if streak == 0 and not any(e.get("event_type") == "daily_checkin_completed" for e in recent[-14:]):
+            gaps.append(
+                "No recent daily check-ins in timeline; do not assume journaling or streak data unless user_state.retention shows it."
+            )
+
     priority_topics: list[str] = []
     if stance == "escalate_support":
         priority_topics.extend(["safety", "adherence_barriers", "clinical_touchpoints"])
@@ -150,6 +179,12 @@ def compute_coaching_synthesis(
         priority_topics.extend(["symptom_triggers", "self_monitoring", "when_to_escalate"])
     else:
         priority_topics.extend(["sustain_habits", "motivation", "fine_tuning"])
+
+    if retention:
+        priority_topics.append("longitudinal_continuity")
+        wmem = (retention.get("longitudinal") or {}).get("weekly_reflection_memory") or []
+        if isinstance(wmem, list) and wmem:
+            priority_topics.append("week_over_week_differences")
 
     rule_lines: list[str] = []
     for r in rules[:8]:
@@ -192,6 +227,18 @@ def compute_coaching_synthesis(
         },
     }
 
+    wmem_for_prompts = (
+        (retention.get("longitudinal") or {}).get("weekly_reflection_memory") or []
+        if retention
+        else []
+    )
+    if isinstance(wmem_for_prompts, list) and wmem_for_prompts:
+        mm = blueprint["depth_probe_prompts_by_stance"]["maintain_momentum"]
+        blueprint["depth_probe_prompts_by_stance"]["maintain_momentum"] = list(mm) + [
+            "Compared to last week, what did you do differently — even in a small way?",
+            "What does your latest logged metric or reflection suggest about what is working?",
+        ]
+
     return {
         "coaching_stance": stance,
         "stance_rationale": " ".join(rationale_parts),
@@ -205,6 +252,11 @@ def compute_coaching_synthesis(
             "recent_event_types_tail": [e.get("event_type") for e in recent[-8:] if isinstance(e, dict)],
             "symptom_severity_peak_in_window": symptom_peak,
             "medication_missed_7d": missed_7d,
+            "retention_streak": streak,
+            "retention_level": (retention.get("gamification") or {}).get("level") if retention else None,
+            "weekly_reflection_tail": (retention.get("longitudinal") or {}).get("weekly_reflection_memory")[-2:]
+            if retention
+            else [],
         },
         "response_blueprint": blueprint,
     }

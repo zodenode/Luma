@@ -1,6 +1,9 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,8 +18,12 @@ from backend.services.care_pipeline import (
     ingest_symptom,
     process_chat_turn,
     record_consult_completed,
+    record_cost_barrier,
+    record_daily_checkin,
     record_medication_missed,
+    record_metric,
     set_prescription_schedule,
+    submit_weekly_reflection,
 )
 
 
@@ -27,6 +34,19 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Luma Care API", lifespan=lifespan)
+
+_static_dir = Path(__file__).resolve().parent / "static"
+if _static_dir.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+
+@app.get("/retention")
+def retention_dashboard() -> FileResponse:
+    """Lightweight UI for retention metrics and event posting (dev / demo)."""
+    path = _static_dir / "retention.html"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="retention_ui_not_found")
+    return FileResponse(path)
 
 
 class ChatRequest(BaseModel):
@@ -58,6 +78,37 @@ class ConsultRequest(BaseModel):
 class PrescriptionScheduleRequest(BaseModel):
     user_id: str
     schedule: PrescriptionSchedulePayload
+
+
+class DailyCheckinRequest(BaseModel):
+    user_id: str
+    mood_1_5: int | None = Field(None, ge=1, le=5)
+    energy_1_5: int | None = Field(None, ge=1, le=5)
+    note: str | None = None
+
+
+class WeeklyReflectionRequest(BaseModel):
+    user_id: str
+    what_changed: str = Field(..., min_length=1)
+    challenges: str | None = None
+    week_number: int | None = Field(None, ge=1)
+
+
+class MetricRecordedRequest(BaseModel):
+    user_id: str
+    metric_id: str = Field(..., min_length=1)
+    value: float | str
+    unit: str | None = None
+    source: str | None = None
+    note: str | None = None
+
+
+class CostBarrierRequest(BaseModel):
+    user_id: str
+    amount_today: float | None = None
+    currency: str | None = None
+    reason: str | None = None
+    source: str | None = None
 
 
 @app.post("/v1/chat", response_model=ChatResponse)
@@ -99,3 +150,27 @@ def user_state(external_user_id: str, db: Session = Depends(get_db)) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail="user_not_found")
     return get_state_view(db, row)
+
+
+@app.post("/v1/events/daily_checkin")
+def post_daily_checkin(req: DailyCheckinRequest, db: Session = Depends(get_db)) -> dict:
+    user = get_or_create_user(db, req.user_id)
+    return record_daily_checkin(db, user, req.mood_1_5, req.energy_1_5, req.note)
+
+
+@app.post("/v1/events/weekly_reflection")
+def post_weekly_reflection(req: WeeklyReflectionRequest, db: Session = Depends(get_db)) -> dict:
+    user = get_or_create_user(db, req.user_id)
+    return submit_weekly_reflection(db, user, req.what_changed, req.challenges, req.week_number)
+
+
+@app.post("/v1/events/metric")
+def post_metric(req: MetricRecordedRequest, db: Session = Depends(get_db)) -> dict:
+    user = get_or_create_user(db, req.user_id)
+    return record_metric(db, user, req.metric_id, req.value, req.unit, req.source, req.note)
+
+
+@app.post("/v1/events/cost_barrier")
+def post_cost_barrier(req: CostBarrierRequest, db: Session = Depends(get_db)) -> dict:
+    user = get_or_create_user(db, req.user_id)
+    return record_cost_barrier(db, user, req.amount_today, req.currency, req.reason, req.source)
