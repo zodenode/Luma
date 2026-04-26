@@ -3,23 +3,40 @@ from typing import Any
 from backend.ai.synthesis import compute_coaching_synthesis
 
 # System-facing coaching contract: pass this (or equivalent) to your LLM as instructions.
-COACHING_SYSTEM_DIRECTIVE = """You are a senior longitudinal health coach working alongside clinicians.
+COACHING_SYSTEM_DIRECTIVE = """You are an AI coaching and clinical adherence system integrated into a digital health app.
+
+Your role is to track, interpret, and optimise user behaviour related to treatment adherence, symptom response, and clinically relevant lifestyle inputs. You are not a general productivity or lifestyle gamification system.
 
 You receive a structured context bundle:
 - user_state: materialised snapshot (risk, adherence, prescription_schedule summary, labs, metrics)
 - recent_events: append-only care timeline (types, timestamps, payloads) — your primary continuity signal
 - active_rules: rules that fired on this turn (names + actions) — signals system escalation or follow-up
 - treatment_context: merge of treatment-specific fields for this interaction
-- coach_synthesis: derived meta-layer (stance, safety notes, information gaps, response blueprint)
+- coach_synthesis: derived meta-layer (clinical stance, safety notes, information gaps, response blueprint, clinical_signal_model)
 
-Depth expectations:
-1. Reflect what the user actually said; connect it to 1–2 concrete signals from recent_events or user_state.
-2. Layer your response: emotional validation → sense-making (patterns, not blame) → one focused behavioural plan
-   (24–72h) with specificity (when/where/how), not a generic pep talk.
+Core responsibility:
+1. Convert user-reported and device-tracked actions into treatment adherence signals, symptom and outcome trends, clinically relevant behavioural insights, and intervention recommendations when necessary.
+2. Prioritise health outcome interpretation over engagement, retention, motivation mechanics, or novelty.
+
+Behaviour input model:
+- Treatment actions: medication intake, supplement/protocol adherence, and prescribed interventions. Weight positively in adherence interpretation.
+- Supportive actions: sleep tracking, protocol exercise, relevant nutrition logs, biomarker or wearable submissions. Treat as supportive outcome signals.
+- Missed actions: missed medication or missed protocol steps. Flag as adherence degradation, not as a penalty or failure.
+
+Internal clinical model only:
+- Adherence rate (0-100%)
+- Symptom stability index (trend-based)
+- Treatment response classification: non_responder, early_responder, partial_responder, strong_responder, sustained_responder
+
+Never expose points, XP, levels, streak mechanics, reward randomness, leaderboards, public rankings, or identity-based competitive framing. Replace "levels" with treatment response classification language.
+
+Feedback style:
+1. Reflect what the user actually said; connect it to 1-2 concrete signals from recent_events, user_state, or coach_synthesis.clinical_signal_model.
+2. Layer your response: neutral acknowledgement -> clinical sense-making (patterns, not blame) -> one focused adherence/outcome plan (24-72h) with specificity.
 3. Tone is set by user_state.risk_level AND coach_synthesis.coaching_stance:
-   - maintain_momentum: warm, precise reinforcement; optional light stretch goals
-   - adherence_repair: curious, non-judgmental barrier exploration; problem-solve with the user
-   - symptom_stabilize: validate distress; co-plan monitoring and coping; clear escalation guidance
+   - maintain_momentum: neutral, precise continuity support; no streak or reward framing
+   - adherence_repair: curious, non-judgmental barrier exploration; problem-solve around treatment continuity
+   - symptom_stabilize: validate symptom burden; co-plan monitoring and coping; clear escalation guidance
    - onboard_integrate: translate clinical plan into daily life; clarify expectations and first steps
    - escalate_support: urgent-compassionate; prioritise safety; favour clinician touchpoints over DIY fixes
 4. Use coach_synthesis.clinical_safety_notes and information_gaps literally: never fill gaps with invented
@@ -27,8 +44,13 @@ Depth expectations:
 5. Use coach_synthesis.response_blueprint.sections as an outline for longer replies when appropriate.
 6. Prefer behavioural, achievable steps; avoid medical diagnosis or changing prescriptions unless the user
    is only repeating what their clinician already said in context.
+7. If social comparison is enabled in product context, only use anonymised cohort benchmarks; never use leaderboards or rankings.
+8. Trigger interventions only for clinically relevant patterns such as sustained non-adherence, worsening symptom trends, or plateau in the expected response window.
 
-Do not invent labs, diagnoses, or medication schedules not present in context."""
+System objective:
+Maximise treatment adherence stability, symptom improvement clarity, and long-term behavioural independence from the app. Do not maximise session frequency, engagement time, or addictive retention loops.
+
+Do not invent labs, diagnoses, or medication schedules not present in context. Keep UX copy easy, clear, and clinically grounded."""
 
 
 def build_ai_context(
@@ -114,11 +136,11 @@ def generate_coaching_response(
     last_lab = state.get("last_lab_summary")
     schedule = state.get("prescription_schedule") or treatment_ctx.get("prescription_schedule")
 
-    tone = "supportive and steady"
+    tone = "neutral and clinically grounded"
     if risk == "high":
         tone = "urgent but compassionate; prioritise safety and clear escalation paths"
     elif risk == "medium":
-        tone = "warm and proactive; encourage small, achievable steps"
+        tone = "proactive and clinically grounded; focus on one achievable next step"
 
     msg = user_message.strip()[:600]
 
@@ -134,9 +156,9 @@ def generate_coaching_response(
     themes = synthesis.get("engagement_themes") or []
     tail = cont.get("recent_event_types_tail") or []
     sections.append(
-        "## Connect to your story\n"
+        "## Clinical context\n"
         f"From your recent care timeline: {', '.join(str(x) for x in tail) or '—'}.\n"
-        f"Themes I am holding: {', '.join(themes) or 'general continuity'}.\n"
+        f"Clinical themes: {', '.join(themes) or 'general continuity'}.\n"
         f"Priority angles for this reply: {', '.join(synthesis.get('priority_topics') or [])}."
     )
 
@@ -179,12 +201,37 @@ def generate_coaching_response(
                 if adherence is not None
                 else ""
             )
-            + "Numbers are a mirror, not a verdict — we use them to choose what to explore next."
+            + "These values guide continuity planning; they are not a penalty."
         )
     elif adherence is not None:
         sections.append(
             f"## Adherence snapshot\nAbout **{float(adherence):.0%}** on our simple model; "
             "we can deepen this once your schedule and dose events are logged more tightly."
+        )
+
+    clinical_model = synthesis.get("clinical_signal_model") or {}
+    if isinstance(clinical_model, dict):
+        symptom_index = clinical_model.get("symptom_stability_index") or {}
+        intervention_triggers = clinical_model.get("intervention_triggers") or []
+        response_class = clinical_model.get("treatment_response_classification")
+        signal_lines = [
+            f"- Treatment response classification: {response_class or 'early_responder'}",
+        ]
+        if isinstance(symptom_index, dict):
+            signal_lines.append(
+                "- Symptom stability: "
+                f"{symptom_index.get('direction', 'unknown')} "
+                f"(index: {symptom_index.get('index', 'insufficient data')})"
+            )
+        if intervention_triggers:
+            signal_lines.append(
+                "- Intervention trigger(s): "
+                + ", ".join(str(trigger) for trigger in intervention_triggers)
+            )
+        sections.append(
+            "## Clinical trajectory\n"
+            + "\n".join(signal_lines)
+            + "\nThese signals are used for treatment interpretation, not rewards."
         )
 
     if last_lab:
@@ -205,15 +252,14 @@ def generate_coaching_response(
     dq = _depth_questions(synthesis)
     if dq:
         sections.append(
-            "## Go deeper\nIf you are willing, one of these might unlock the next step:\n"
+            "## Clarifying question\nOne of these would make the next recommendation more precise:\n"
             + "\n".join(f"- {q}" for q in dq)
         )
 
     sections.append(
         "## Next 24–72 hours\n"
-        "Pick **one** concrete experiment: a specific dose time + cue, a short walk window, "
-        "or a symptom check-in you will actually log. Reply with what you chose and what got in the way — "
-        "that detail is what lets coaching stay precise instead of generic."
+        "Choose **one** clinically relevant action: confirm the next dose time, log the next symptom check-in, "
+        "or note the main barrier to following the protocol. Reply with what happened so the plan can stay specific."
     )
 
     return "\n\n".join(sections)
