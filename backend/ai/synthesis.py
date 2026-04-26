@@ -149,7 +149,7 @@ def compute_coaching_synthesis(
     elif stance == "symptom_stabilize":
         priority_topics.extend(["symptom_triggers", "self_monitoring", "when_to_escalate"])
     else:
-        priority_topics.extend(["sustain_habits", "motivation", "fine_tuning"])
+        priority_topics.extend(["sustain_habits", "treatment_continuity", "fine_tuning"])
 
     rule_lines: list[str] = []
     for r in rules[:8]:
