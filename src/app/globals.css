@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+  background: #0b0f14;
+  color: #e6edf3;
+}
+
+body {
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Thin, quiet scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #1f2a37 transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #1f2a37;
+  border-radius: 9999px;
+}
+
+@layer components {
+  .card {
+    @apply bg-luma-panel border border-luma-border rounded-xl shadow-soft;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 px-2 py-0.5 text-xs rounded-full border;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-lg
+           text-sm font-medium border border-luma-border bg-luma-surface
+           hover:bg-[#17202c] transition-colors disabled:opacity-40 disabled:pointer-events-none;
+  }
+  .btn-primary {
+    @apply bg-luma-accent text-black border-transparent hover:bg-[#5fd6a6];
+  }
+  .btn-ghost {
+    @apply bg-transparent border-transparent hover:bg-luma-surface;
+  }
+  .input {
+    @apply w-full bg-luma-bg border border-luma-border rounded-lg px-3 py-2
+           text-sm placeholder:text-luma-muted focus:outline-none
+           focus:border-luma-accent/60 focus:ring-1 focus:ring-luma-accent/40;
+  }
+  .label {
+    @apply block text-xs uppercase tracking-wide text-luma-muted mb-1.5;
+  }
+}
