@@ -10,6 +10,15 @@ from __future__ import annotations
 from typing import Any
 
 
+TREATMENT_RESPONSE_CLASSES = {
+    "non_responder",
+    "early_responder",
+    "partial_responder",
+    "strong_responder",
+    "sustained_responder",
+}
+
+
 def _schedule_brief(schedule: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(schedule, dict):
         return {"has_schedule": False, "medication_count": 0, "dose_slot_count": 0}
@@ -39,6 +48,120 @@ def _recent_symptom_peak(recent: list[dict[str, Any]]) -> int:
             except (TypeError, ValueError):
                 pass
     return peak
+
+
+def _symptom_trend(recent: list[dict[str, Any]]) -> dict[str, Any]:
+    severities: list[int] = []
+    for e in recent:
+        if e.get("event_type") != "symptom_reported":
+            continue
+        payload = e.get("payload") or {}
+        if not isinstance(payload, dict):
+            continue
+        try:
+            severities.append(int(payload.get("severity") or 0))
+        except (TypeError, ValueError):
+            continue
+
+    if not severities:
+        return {
+            "status": "insufficient_data",
+            "index": None,
+            "sample_count": 0,
+            "direction": "unknown",
+        }
+    if len(severities) < 3:
+        return {
+            "status": "baseline_only",
+            "index": max(0, 100 - (max(severities) * 10)),
+            "sample_count": len(severities),
+            "direction": "unknown",
+        }
+
+    latest = severities[-3:]
+    earlier = severities[:-3] or severities[:1]
+    latest_avg = sum(latest) / len(latest)
+    earlier_avg = sum(earlier) / len(earlier)
+    delta = latest_avg - earlier_avg
+
+    if delta >= 1.0:
+        direction = "worsening"
+    elif delta <= -1.0:
+        direction = "improving"
+    else:
+        direction = "stable"
+
+    volatility = max(severities) - min(severities)
+    stability_index = max(0, min(100, round(100 - (latest_avg * 8) - (volatility * 4))))
+    return {
+        "status": "available",
+        "index": stability_index,
+        "sample_count": len(severities),
+        "direction": direction,
+        "latest_average": round(latest_avg, 2),
+        "prior_average": round(earlier_avg, 2),
+    }
+
+
+def _classify_behavior_signals(recent: list[dict[str, Any]]) -> dict[str, Any]:
+    categories = {
+        "treatment_actions": 0,
+        "supportive_actions": 0,
+        "missed_actions": 0,
+        "other_clinical_events": 0,
+    }
+    event_map = {
+        "medication_taken": "treatment_actions",
+        "supplement_taken": "treatment_actions",
+        "protocol_step_completed": "treatment_actions",
+        "prescribed_intervention_completed": "treatment_actions",
+        "sleep_tracked": "supportive_actions",
+        "exercise_completed": "supportive_actions",
+        "nutrition_logged": "supportive_actions",
+        "biomarker_submitted": "supportive_actions",
+        "wearable_data_submitted": "supportive_actions",
+        "lab_result_received": "supportive_actions",
+        "medication_missed": "missed_actions",
+        "protocol_step_missed": "missed_actions",
+    }
+
+    for event in recent:
+        if not isinstance(event, dict):
+            continue
+        bucket = event_map.get(str(event.get("event_type") or ""))
+        if bucket:
+            categories[bucket] += 1
+        else:
+            categories["other_clinical_events"] += 1
+    return categories
+
+
+def _treatment_response_classification(
+    adherence_rate_percent: int | None,
+    symptom_trend: dict[str, Any],
+    recent: list[dict[str, Any]],
+) -> str:
+    if adherence_rate_percent is None or symptom_trend["sample_count"] < 2:
+        return "early_responder"
+
+    direction = symptom_trend.get("direction")
+    stability_index = symptom_trend.get("index") or 0
+    symptom_events = symptom_trend.get("sample_count") or 0
+    treatment_events = sum(
+        1
+        for event in recent
+        if isinstance(event, dict)
+        and event.get("event_type")
+        in {"medication_taken", "protocol_step_completed", "prescribed_intervention_completed"}
+    )
+
+    if adherence_rate_percent < 60 or direction == "worsening":
+        return "non_responder"
+    if adherence_rate_percent >= 90 and direction == "improving" and stability_index >= 70:
+        return "sustained_responder" if symptom_events >= 6 and treatment_events >= 6 else "strong_responder"
+    if adherence_rate_percent >= 75 and direction in {"improving", "stable"}:
+        return "partial_responder"
+    return "early_responder"
 
 
 def _event_themes(recent: list[dict[str, Any]], limit: int = 25) -> list[str]:
@@ -102,8 +225,21 @@ def compute_coaching_synthesis(
     streak_days = int(streak.get("current_days") or 0)
     sched = state.get("prescription_schedule") or treatment.get("prescription_schedule")
     sched_brief = _schedule_brief(sched if isinstance(sched, dict) else None)
+    adherence_score = state.get("adherence_score")
+    adherence_rate_percent: int | None = None
+    if adherence_score is not None:
+        try:
+            adherence_rate_percent = round(float(adherence_score) * 100)
+        except (TypeError, ValueError):
+            adherence_rate_percent = None
+    symptom_stability = _symptom_trend(recent)
+    treatment_response = _treatment_response_classification(
+        adherence_rate_percent,
+        symptom_stability,
+        recent,
+    )
 
-    # Coaching stance: drives depth of probing vs stabilizing vs escalation tone
+    # Clinical stance: drives depth of probing vs stabilizing vs escalation tone.
     stance = "maintain_momentum"
     rationale_parts: list[str] = []
 
@@ -124,7 +260,7 @@ def compute_coaching_synthesis(
         rationale_parts.append("Meaningful symptom intensity; validate and co-plan coping.")
 
     if not rationale_parts:
-        rationale_parts.append("Risk and recent pattern support continuity and reinforcement.")
+        rationale_parts.append("Risk and recent pattern support continuity and outcome monitoring.")
 
     themes = _event_themes(recent)
 
@@ -160,6 +296,19 @@ def compute_coaching_synthesis(
             "do not infer causation or medical meaning from them."
         )
 
+    intervention_triggers: list[str] = []
+    if missed_7d > 2:
+        intervention_triggers.append("sustained_non_adherence")
+    if symptom_stability.get("direction") == "worsening" or symptom_peak >= 8:
+        intervention_triggers.append("worsening_symptom_trend")
+    if (
+        adherence_rate_percent is not None
+        and adherence_rate_percent >= 80
+        and symptom_stability.get("direction") == "stable"
+        and symptom_peak >= 4
+    ):
+        intervention_triggers.append("plateau_expected_response_window")
+
     priority_topics: list[str] = []
     if stance == "escalate_support":
         priority_topics.extend(["safety", "adherence_barriers", "clinical_touchpoints"])
@@ -170,7 +319,7 @@ def compute_coaching_synthesis(
     elif stance == "symptom_stabilize":
         priority_topics.extend(["symptom_triggers", "self_monitoring", "when_to_escalate"])
     else:
-        priority_topics.extend(["sustain_habits", "motivation", "fine_tuning"])
+        priority_topics.extend(["treatment_continuity", "outcome_monitoring", "fine_tuning"])
 
     rule_lines: list[str] = []
     for r in rules[:8]:
@@ -207,8 +356,8 @@ def compute_coaching_synthesis(
                 "What have you already tried that helped even a little?",
             ],
             "maintain_momentum": [
-                "What is one habit from last week you are quietly proud of?",
-                "Where do you want slightly more structure versus more flexibility?",
+                "Which part of the treatment routine has been easiest to keep consistent?",
+                "Where would a small schedule adjustment reduce friction without changing the plan?",
             ],
         },
     }
@@ -217,6 +366,14 @@ def compute_coaching_synthesis(
         "coaching_stance": stance,
         "stance_rationale": " ".join(rationale_parts),
         "engagement_themes": themes,
+        "clinical_signal_model": {
+            "behavior_input_counts": _classify_behavior_signals(recent),
+            "adherence_rate_percent": adherence_rate_percent,
+            "symptom_stability_index": symptom_stability,
+            "treatment_response_classification": treatment_response,
+            "allowed_response_classes": sorted(TREATMENT_RESPONSE_CLASSES),
+            "intervention_triggers": intervention_triggers,
+        },
         "clinical_safety_notes": safety_notes,
         "information_gaps": gaps,
         "priority_topics": priority_topics,
